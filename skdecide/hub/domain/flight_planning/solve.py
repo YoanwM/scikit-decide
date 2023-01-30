@@ -40,6 +40,7 @@ def solve(filename = None, origin = "LFPG", destination = "WSSS", aircraft="A388
         file = os.path.abspath(os.path.join(os.path.dirname(__file__), "instances/%s" % filename))
     print(file)
     if file:
+        
         wind_interpolator = WindInterpolator(file)
     if wind_interpolator:
         wind_dataset = wind_interpolator.get_dataset()
@@ -55,6 +56,7 @@ def solve(filename = None, origin = "LFPG", destination = "WSSS", aircraft="A388
     domain = domain_factory()
 
     match_solvers(domain=domain)
+    
     if objective == "fuel" or objective == "time":
         heuristic = None
     if objective == "distance":
@@ -128,13 +130,15 @@ if __name__ == '__main__':
     if args.filename :
         filename = args.filename
     else : 
-        filename = 'instance_europe.grib' 
+        filename = 'instance3.grib' 
+        filename = None
     
     if args.destination :
         destination = args.destination
     else : 
         destination = 'LFBO' 
         destination = "EDDB" # Berlin
+        destination = "WSSS" # Singapour
 
     if args.origin :
         origin = args.origin
@@ -146,9 +150,9 @@ if __name__ == '__main__':
     if args.aircraft :
         aircraft = args.aircraft
     else : 
-        aircraft = "A320"
+        aircraft = 'A388'
 
     
 
-    #solve(filename, debug = True, destination=destination, origin=origin, aircraft=aircraft)
-    solve(filename="instance3.grib")
+    solve(filename, debug = True, destination=destination, origin=origin, aircraft=aircraft)
+    #solve(filename="instance3.grib")

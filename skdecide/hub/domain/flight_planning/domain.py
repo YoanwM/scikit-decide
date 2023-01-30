@@ -199,7 +199,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         Set cost to distance travelled between points
         """
 
-        assert memory != next_state, "Next state is the same as the current state"
+        assert memory != next_state, "Next state is the same as the current state" 
+        # Have to change -> openAP top ?
         if self.objective == "distance":
             cost = distance(
                 memory.trajectory.iloc[-1]["lat"],

@@ -319,7 +319,10 @@ def flying(
                 isobaricInhPa=isobaric,
             )
             we, wn = wind_ms.u.values, wind_ms.v.values  # 0, 300
-
+        if np.isnan(wn) :
+            wn = 0.0
+        if np.isnan(we):
+            we = 0.0
         wdir = (degrees(atan2(we, wn)) + 180) % 360
         wspd = sqrt(wn * wn + we * we)
 
@@ -339,7 +342,7 @@ def flying(
         gse = tas * sin(radians(heading)) - we
 
         gs = sqrt(gsn * gsn + gse * gse) # ground speed
-    
+        print("gs : %f  we : %f wn : %f tas : %f" % (gs,we,wn,tas))
         if gs*dt > dist :
             # Last step. make sure we go to destination.
             dt = dist/gs
