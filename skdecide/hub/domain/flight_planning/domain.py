@@ -3,7 +3,7 @@ from argparse import Action
 from datetime import datetime, timedelta
 from enum import Enum
 from time import sleep
-from typing import Any, NamedTuple, Optional, Tuple, Union
+from typing import Any, List, NamedTuple, Optional, Tuple, Union
 import xarray as xr
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -83,6 +83,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         m0: float = 0.8,
         wind_interpolator: WindInterpolator = None,
         objective: Union[str, tuple] = "fuel",
+        constraints = None,
         nb_points_forward: int=41,
         nb_points_lateral: int=11,
     ):
@@ -100,7 +101,6 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             Wind field data. Defaults to None.
         objective: str
             The objective of the flight. Defaults to "fuel".
-            for climb, cruise and descent.
         """
         
         if isinstance(origin, str):
@@ -116,7 +116,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             self.lat2, self.lon2 = destination
         #
         self.objective = objective
-
+        self.constraints = constraints
         self.wind_ds = None
         if wind_interpolator:
             self.wind_ds = wind_interpolator.get_dataset()
@@ -185,6 +185,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             pd.concat([memory.trajectory, trajectory], ignore_index=True),
             (next_x, next_y),
         )
+        print("State = ", state, trajectory.tail(1)["fuel"])
         return state
 
     def _get_transition_value(
@@ -211,7 +212,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         elif self.objective == "fuel":
             cost = memory.trajectory.iloc[-1]["mass"]-next_state.trajectory.iloc[-1]["mass"]
         elif self.objective == "time":
-            cost = next_state.trajectory.iloc[-1]["mass"]-memory.trajectory.iloc[-1]["ts"] 
+            cost = next_state.trajectory.iloc[-1]["ts"]-memory.trajectory.iloc[-1]["ts"] 
         # return Value(cost=1)
         return Value(cost=cost)
 
@@ -231,6 +232,12 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         """
         return ListSpace([State(None, (self.np - 1, j)) for j in range(self.nc)])
 
+    def _get_terminal_state_(self, state:State) -> D.T_state:
+        
+        return {'time' : state.trajectory.iloc[-1]["ts"],
+                'fuel' : state.trajectory.iloc[-1]["fuel"]}
+    
+    
     def _is_terminal(self, state: State) -> D.T_predicate:
         """
         Indicate whether a state is terminal.

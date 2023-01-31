@@ -4,7 +4,7 @@ from argparse import Action
 from datetime import datetime, timedelta
 from enum import Enum
 from time import sleep
-from typing import Any, NamedTuple, Optional, Tuple, Union
+from typing import Any, List, NamedTuple, Optional, Tuple, Union
 import xarray as xr
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -18,7 +18,7 @@ from IPython.display import clear_output
 from openap.extra.aero import distance
 from openap.extra.nav import airport
 from openap.fuel import FuelFlow
-from openap.prop import aircraft
+from openap.prop import aircraft as openap_aircraft
 from pygeodesy.ellipsoidalVincenty import LatLon
 
 from skdecide import DeterministicPlanningDomain, Space, Value
@@ -32,25 +32,42 @@ from domain import FlightPlanningDomain
 
 
  
-def solve(filename = None, origin = "LFPG", destination = "WSSS", aircraft="A388", debug = False):
+def solve(filename = None, 
+          origin = "LFPG", 
+          destination = "WSSS", 
+          aircraft="A388", 
+          debug = False, 
+          objective = "fuel", 
+          timeConstraint = None):
+
     wind_interpolator: WindInterpolator = None
     file = None
-    print(filename)
     if filename is not None :
-        file = os.path.abspath(os.path.join(os.path.dirname(__file__), "instances/%s" % filename))
-    print(file)
+        file = os.path.abspath(os.path.join(os.path.dirname(__file__), 
+                                            "instances/%s" % filename))
     if file:
         
         wind_interpolator = WindInterpolator(file)
     if wind_interpolator:
         wind_dataset = wind_interpolator.get_dataset()
-        #wind_dataset.u.values -= 60
-        #wind_dataset.v.values += 60
+        wind_dataset.u.values -= 60
+        wind_dataset.v.values += 60
         axes = wind_interpolator.plot_wind(alt=35000.0, t=[0], plot_wind=True)
         plt.savefig('wind')
         # plt.show()
-    objective = "distance"
-    domain_factory = lambda: FlightPlanningDomain(origin, destination, aircraft, 
+    maxFuel = openap_aircraft(aircraft)['limits']['MFC']
+    constraints = {'time' : timeConstraint, # Aircraft should arrive before a given time (or in a given window)
+                   'fuel' : 0.97*maxFuel} # Aircraft should arrive with some fuel remaining  
+    print(constraints)
+    
+    
+    
+    
+    
+    domain_factory = lambda: FlightPlanningDomain(origin, 
+                                                  destination, 
+                                                  aircraft, 
+                                                  constraints=constraints,
                                                   wind_interpolator=wind_interpolator, 
                                                   objective=objective)
     domain = domain_factory()
@@ -110,8 +127,21 @@ def solve(filename = None, origin = "LFPG", destination = "WSSS", aircraft="A388
     plt.savefig("terminal")
     # goal reached?
     is_goal_reached = domain.is_goal(observation)
-    if is_goal_reached:
-        print(f"Goal reached in {i_step} steps!")
+    terminal_state_constraints = domain._get_terminal_state_(observation)
+    if is_goal_reached :
+        if constraints['time'] is not None :
+            if constraints['time'][1] >= terminal_state_constraints['time'] :
+                if constraints['fuel'] >= terminal_state_constraints['fuel'] :
+                    print(f"Goal reached in {i_step} steps!")
+                else : 
+                    print(f"Goal reached in {i_step} steps, but there is not enough fuel remaining!")
+            else : 
+                print(f"Goal reached in {i_step} steps, but not in the good timelapse!")
+        else :
+            if constraints['fuel'] >= terminal_state_constraints['fuel'] :
+                print(f"Goal reached in {i_step} steps!")
+            else : 
+                print(f"Goal reached in {i_step} steps, but there is not enough fuel remaining!")
     else:
         print(f"Goal not reached after {i_step} steps!")
     solver._cleanup()
@@ -125,6 +155,9 @@ if __name__ == '__main__':
     parser.add_argument('-d','--destination', help='ICAO code of the destination', type=str)
     parser.add_argument('-o','--origin', help='ICAO code of the origin', type=str)
     parser.add_argument('-ac', '--aircraft', help='ICAO code of the aircraft', type=str)
+    parser.add_argument('-obj', '--objective', help='Objective for the flight (time, fuel, distance)', type=str)
+    parser.add_argument('-tcs', '--timeConstraintStart', help='Start Time constraint for the flight. The flight should arrive after that time')
+    parser.add_argument('-tce', '--timeConstraintEnd', help='End Time constraint for the flight. The flight should arrive before that time')
     args = parser.parse_args()
     
     if args.filename :
@@ -152,7 +185,27 @@ if __name__ == '__main__':
     else : 
         aircraft = 'A388'
 
+    if args.objective :
+        objective = args.objective
+    else : 
+        objective = "fuel"
+        
+    if args.timeConstraintStart :
+        if args.timeConstraintEnd :
+            timeConstraint = (float(args.timeConstraintStart),float(args.timeConstraintEnd))
+        else : 
+            timeConstraint = (float(args.timeConstraintStart),0.0)
+    else:
+        if args.timeConstraintEnd :
+            timeConstraint = (0.0,float(args.timeConstraintEnd))
+        else :
+            timeConstraint = None
     
 
-    solve(filename, debug = True, destination=destination, origin=origin, aircraft=aircraft)
+    solve(filename, debug = True, 
+          destination=destination, 
+          origin=origin, 
+          aircraft=aircraft, 
+          objective=objective, 
+          timeConstraint=timeConstraint)
     #solve(filename="instance3.grib")
