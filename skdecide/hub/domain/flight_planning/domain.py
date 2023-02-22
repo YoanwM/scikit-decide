@@ -26,7 +26,6 @@ from skdecide.hub.solver.astar import Astar
 from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
 from skdecide.utils import match_solvers
 
-
 class State:
     trajectory: pd.DataFrame
     pos: Tuple[int, int]
@@ -34,15 +33,29 @@ class State:
     def __init__(self, trajectory, pos):
         self.trajectory = trajectory
         self.pos = pos
+        self.mass = trajectory.iloc[-1]['mass']
+        self.alt = trajectory.iloc[-1]['alt']
+        self.time = trajectory.iloc[-1]['ts']
 
     def __hash__(self):
-        return hash(self.pos)
+        return hash((self.pos,
+                     self.mass,
+                     self.alt,
+                     self.time))
 
     def __eq__(self, other):
-        return self.pos == other.pos
+        return (self.pos == other.pos and 
+                self.mass == other.mass and 
+                self.alt == other.alt and 
+                self.time == other.time 
+                )
 
     def __ne__(self, other):
-        return self.pos != other.pos
+        return (self.pos != other.pos and 
+                self.mass != other.mass and 
+                self.alt != other.alt and 
+                self.time != other.time 
+                )
 
     def __str__(self):
         return f"[{self.trajectory.iloc[-1]['ts']:.2f} \
@@ -185,7 +198,6 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             pd.concat([memory.trajectory, trajectory], ignore_index=True),
             (next_x, next_y),
         )
-        print("State = ", state, trajectory.tail(1)["fuel"])
         return state
 
     def _get_transition_value(
@@ -232,10 +244,21 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         """
         return ListSpace([State(None, (self.np - 1, j)) for j in range(self.nc)])
 
-    def _get_terminal_state_(self, state:State) -> D.T_state:
-        
+    def _get_terminal_state_time_fuel(self, state:State) -> dict:
+        """
+        Get the domain terminal state information to compare with the constraints
+
+        Args:
+            state (State): terminal state to retrieve the information on fuel and time.
+
+        Returns:
+            dict: dictionnary containing both fuel and time information. 
+        """
+        fuel = 0.0 
+        for trajectory in state.trajectory.iloc :
+            fuel += trajectory["fuel"]
         return {'time' : state.trajectory.iloc[-1]["ts"],
-                'fuel' : state.trajectory.iloc[-1]["fuel"]}
+                'fuel' : fuel}
     
     
     def _is_terminal(self, state: State) -> D.T_predicate:
