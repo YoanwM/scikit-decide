@@ -29,27 +29,33 @@ from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
 from skdecide.utils import match_solvers
 from domain import FlightPlanningDomain
 
-
+from weather_interpolator.weather_tools.get_weather_noaa import get_weather_matrix
+from weather_interpolator.weather_tools.interpolator.GenericInterpolator import GenericWindInterpolator
 
  
-def solve(filename = None, origin = "LFPG", destination = "WSSS", aircraft="A388", debug = False):
-    wind_interpolator: WindInterpolator = None
-    file = None
-    print(filename)
-    if filename is not None :
-        file = os.path.abspath(os.path.join(os.path.dirname(__file__), "instances/%s" % filename))
-    print(file)
-    if file:
-        
-        wind_interpolator = WindInterpolator(file)
-    if wind_interpolator:
-        wind_dataset = wind_interpolator.get_dataset()
-        #wind_dataset.u.values -= 60
-        #wind_dataset.v.values += 60
-        axes = wind_interpolator.plot_wind(alt=35000.0, t=[0], plot_wind=True)
-        plt.savefig('wind')
-        # plt.show()
-    objective = "distance"
+def solve(filename = None, 
+          origin = "LFPG", 
+          destination = "WSSS", 
+          aircraft="A388", 
+          debug = False, 
+          weather={"year":'2023',
+                   "month":'01',
+                   "day":'13',
+                   "forecast":'nowcast'}):
+    
+    if weather :            
+        wind_interpolator = None
+        mat = get_weather_matrix(year=weather["year"],
+                                month=weather["month"],
+                                day=weather["day"],
+                                forecast=weather["forecast"],
+                                delete_npz_from_local=False,
+                                delete_grib_from_local=False)
+        wind_interpolator = GenericWindInterpolator(file_npz=mat)
+    else : 
+        wind_interpolator = None
+
+    objective = "fuel"
     domain_factory = lambda: FlightPlanningDomain(origin, destination, aircraft, 
                                                   wind_interpolator=wind_interpolator, 
                                                   objective=objective)

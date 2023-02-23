@@ -26,6 +26,7 @@ from skdecide.hub.solver.astar import Astar
 from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
 from skdecide.utils import match_solvers
 
+from weather_interpolator.weather_tools.interpolator.GenericInterpolator import GenericWindInterpolator
 
 class State:
     trajectory: pd.DataFrame
@@ -81,7 +82,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         destination: Union[str, tuple],
         actype: str,
         m0: float = 0.8,
-        wind_interpolator: WindInterpolator = None,
+        wind_interpolator: GenericWindInterpolator = None,
         objective: Union[str, tuple] = "fuel",
         nb_points_forward: int=41,
         nb_points_lateral: int=11,
@@ -119,7 +120,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
         self.wind_ds = None
         if wind_interpolator:
-            self.wind_ds = wind_interpolator.get_dataset()
+            self.wind_ds = wind_interpolator
 
         # Build network between top of climb and destination airport
         self.np: int = nb_points_forward

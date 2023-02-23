@@ -359,6 +359,7 @@ def load_npz():
     for j in range(1000):
         t = perf_counter()
         interp = interpolator.interpol_wind_classic(lat=50, longi=100, alt=35000, t=0)
+        print(interp)
         t2 = perf_counter()
         print(t2 - t, " sec")
 
