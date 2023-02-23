@@ -29,7 +29,8 @@ from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
 from skdecide.utils import match_solvers
 from domain import FlightPlanningDomain
 
-
+from weather_interpolator.weather_tools.get_weather_noaa import get_weather_matrix
+from weather_interpolator.weather_tools.interpolator.GenericInterpolator import GenericWindInterpolator
 
  
 def solve(filename = None, 
@@ -38,32 +39,33 @@ def solve(filename = None,
           aircraft="A388", 
           debug = False, 
           objective = "fuel", 
-          timeConstraint = None):
+          timeConstraint = None,
+          weather={"year":'2023',
+                   "month":'01',
+                   "day":'13',
+                   "forecast":'nowcast'}):
 
-    wind_interpolator: WindInterpolator = None
-    file = None
-    if filename is not None :
-        file = os.path.abspath(os.path.join(os.path.dirname(__file__), 
-                                            "instances/%s" % filename))
-    if file:
-        
-        wind_interpolator = WindInterpolator(file)
-    if wind_interpolator:
-        wind_dataset = wind_interpolator.get_dataset()
-        wind_dataset.u.values -= 60
-        wind_dataset.v.values += 60
-        axes = wind_interpolator.plot_wind(alt=35000.0, t=[0], plot_wind=True)
-        plt.savefig('wind')
-        # plt.show()
+
     maxFuel = openap_aircraft(aircraft)['limits']['MFC']
     constraints = {'time' : timeConstraint, # Aircraft should arrive before a given time (or in a given window)
                    'fuel' : 0.97*maxFuel} # Aircraft should arrive with some fuel remaining  
     print(constraints)
+
     
-    
-    
-    
-    
+    if weather :            
+        wind_interpolator = None
+        mat = get_weather_matrix(year=weather["year"],
+                                month=weather["month"],
+                                day=weather["day"],
+                                forecast=weather["forecast"],
+                                delete_npz_from_local=False,
+                                delete_grib_from_local=False)
+        wind_interpolator = GenericWindInterpolator(file_npz=mat)
+    else : 
+        wind_interpolator = None
+
+    objective = "fuel"   
+   
     domain_factory = lambda: FlightPlanningDomain(origin, 
                                                   destination, 
                                                   aircraft, 
@@ -79,17 +81,7 @@ def solve(filename = None,
     if objective == "distance":
         def heuristic(d,s):
             return d.heuristic(s)
-    """
-    print("Starting planning")
-    use_lazy_astar = False
-    if use_lazy_astar:
-        solver = LazyAstar(from_state=domain.get_initial_state(), heuristic=heuristic, verbose=True)
-        solver.solve(lambda: domain)
-    else:
-        solver = Astar(heuristic=heuristic, debug_logs=debug)
-        FlightPlanningDomain.solve_with(solver, domain_factory)
-        solver.reset()
-    """
+
     solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=False)
     FlightPlanningDomain.solve_with(solver, domain_factory)
     pause_between_steps = None
