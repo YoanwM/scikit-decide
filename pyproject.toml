@@ -33,6 +33,7 @@ classifiers = [
 
 [tool.poetry.build]
 script = "builder.py"
+generate-setup-file = true
 
 [tool.poetry-dynamic-versioning]
 enable = true
