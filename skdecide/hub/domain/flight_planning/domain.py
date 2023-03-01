@@ -8,13 +8,11 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import pandas as pd
 from flightplanning_utils import (
-    WeatherRetrieverFromEcmwf,
-    WindInterpolator,
     flying,
     plot_trajectory,
 )
 from IPython.display import clear_output
-from openap.extra.aero import distance
+from openap.extra.aero import distance, mach2tas, kts, ft
 from openap.extra.nav import airport
 from openap.fuel import FuelFlow
 from openap.prop import aircraft
@@ -24,6 +22,7 @@ from skdecide import DeterministicPlanningDomain, Space, Value, Domain
 from skdecide.builders.domain import Renderable, UnrestrictedActions
 from skdecide.hub.solver.astar import Astar
 from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
+from skdecide import ImplicitSpace
 from skdecide.utils import match_solvers
 
 from weather_interpolator.weather_tools.interpolator.GenericInterpolator import GenericWindInterpolator
@@ -36,10 +35,15 @@ class State:
     def __init__(self, trajectory, pos):
         self.trajectory = trajectory
         self.pos = pos
-        self.mass = trajectory.iloc[-1]['mass']
-        self.alt = trajectory.iloc[-1]['alt']
-        self.time = trajectory.iloc[-1]['ts']
-
+        if trajectory is not None :
+            self.mass = trajectory.iloc[-1]['mass']
+            self.alt = trajectory.iloc[-1]['alt']
+            self.time = trajectory.iloc[-1]['ts']
+        else : 
+            self.mass = None
+            self.alt = None
+            self.time = None
+    
     def __hash__(self):
         return hash((self.pos,
                      self.mass,
@@ -54,9 +58,9 @@ class State:
                 )
 
     def __ne__(self, other):
-        return (self.pos != other.pos and 
-                self.mass != other.mass and 
-                self.alt != other.alt and 
+        return (self.pos != other.pos or 
+                self.mass != other.mass or 
+                self.alt != other.alt or 
                 self.time != other.time 
                 )
 
@@ -204,6 +208,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         return state
 
     def _get_transition_value(
+        
         self,
         memory: D.T_state,
         action: D.T_event,
@@ -214,7 +219,6 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
         Set cost to distance travelled between points
         """
-
         assert memory != next_state, "Next state is the same as the current state" 
         # Have to change -> openAP top ?
         if self.objective == "distance":
@@ -245,7 +249,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
         Set the end position as goal.
         """
-        return ListSpace([State(None, (self.np - 1, j)) for j in range(self.nc)])
+        return ImplicitSpace(lambda x: x.pos[0]==self.np - 1)
 
     def _get_terminal_state_time_fuel(self, state:State) -> dict:
         """
@@ -314,15 +318,24 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
     def heuristic(self, s: D.T_state) -> Value[D.T_value]:
         """Heuristic to be used by search algorithms.
-
-        Here fuel consumption to reach target.
-
+            Depending on the objective and constraints. 
         """
         lat = s.trajectory.iloc[-1]["lat"]
         lon = s.trajectory.iloc[-1]["lon"]
         # Compute distance in meters
         distance_to_goal = distance(lat, lon, self.lat2, self.lon2)
-        cost = distance_to_goal
+        
+        if self.objective == "distance" : 
+            cost = distance_to_goal
+
+        if self.objective == "fuel" :
+            tas = mach2tas(s.trajectory.iloc[-1]["mach"], s.trajectory.iloc[-1]["alt"])
+            cost = (distance_to_goal/(tas*kts)) * self.fuel_flow(s.trajectory.iloc[-1]["mass"],
+                                  tas * kts,
+                                  s.trajectory.iloc[-1]["alt"] * ft)
+                                             
+        if self.objective == "time" :
+            cost = distance_to_goal/s.trajectory.iloc[-1]["mach"]
 
         return Value(cost=cost)
 

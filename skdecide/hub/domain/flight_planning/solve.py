@@ -9,10 +9,9 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import pandas as pd
 from flightplanning_utils import (
-    WeatherRetrieverFromEcmwf,
-    WindInterpolator,
     flying,
     plot_trajectory,
+    plot_network
 )
 from IPython.display import clear_output
 from openap.extra.aero import distance
@@ -43,7 +42,8 @@ def solve(filename = None,
           weather={"year":'2023',
                    "month":'01',
                    "day":'13',
-                   "forecast":'nowcast'}):
+                   "forecast":'nowcast'},
+          num = None):
 
 
     maxFuel = openap_aircraft(aircraft)['limits']['MFC']
@@ -64,25 +64,33 @@ def solve(filename = None,
     else : 
         wind_interpolator = None
 
-    objective = "fuel"   
+    objective = "distance"   
    
     domain_factory = lambda: FlightPlanningDomain(origin, 
                                                   destination, 
                                                   aircraft, 
                                                   constraints=constraints,
                                                   wind_interpolator=wind_interpolator, 
-                                                  objective=objective)
+                                                  objective=objective,
+                                                  nb_points_forward=41,
+                                                  nb_points_lateral=11,
+                                                  )
     domain = domain_factory()
-
+    plot_network(domain)
     match_solvers(domain=domain)
     
-    if objective == "fuel" or objective == "time":
-        heuristic = None
-    if objective == "distance":
+    """if objective == "fuel" :
         def heuristic(d,s):
             return d.heuristic(s)
-
-    solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=False)
+    elif objective == "time":
+        def heuristic(d,s):
+            return d.heuristic(s)
+    elif objective == "distance":
+        def heuristic(d,s):
+            return d.heuristic(s)"""
+        
+    solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
+    #solver = LazyAstar(heuristic=lambda d, s: d.heuristic(s))
     FlightPlanningDomain.solve_with(solver, domain_factory)
     pause_between_steps = None
     max_steps = 100
@@ -92,8 +100,11 @@ def solve(filename = None,
     #plt.savefig('init.png')
     #plt.show()
     solver.reset()
-   
-    
+    plt.clf()  # clear figure
+    clear_output(wait=True)
+    figure = domain.render(observation)
+    plt.savefig("look")
+    #solver._solve_domain(lambda: domain)
     # loop until max_steps or goal is reached
     for i_step in range(1, max_steps + 1):
         if pause_between_steps is not None:
@@ -116,10 +127,13 @@ def solve(filename = None,
         # final state reached?
         if domain.is_terminal(observation):
             break
-    plt.savefig("terminal")
+    if num is None :
+        plt.savefig("terminal")
+    else : 
+        plt.savefig("terminal"+num)
     # goal reached?
     is_goal_reached = domain.is_goal(observation)
-    terminal_state_constraints = domain._get_terminal_state_(observation)
+    terminal_state_constraints = domain._get_terminal_state_time_fuel(observation)
     if is_goal_reached :
         if constraints['time'] is not None :
             if constraints['time'][1] >= terminal_state_constraints['time'] :

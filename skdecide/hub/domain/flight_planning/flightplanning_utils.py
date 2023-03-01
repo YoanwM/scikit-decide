@@ -234,6 +234,26 @@ def plot_trajectory(
 
     return fig
 
+def plot_network(domain):
+    network = domain.network
+    origin_coord = domain.lat1, domain.lon1
+    target_coord = domain.lat2, domain.lon2
+    fig, ax = plt.subplots(1, subplot_kw={"projection": ccrs.PlateCarree()}) 
+    ax.set_extent([min(origin_coord[1], target_coord[1]) - 4, max(origin_coord[1], target_coord[1])+4, 
+                min(origin_coord[0], target_coord[0]) - 2, max(origin_coord[0], target_coord[0]) + 2])
+    ax.add_feature(OCEAN, facecolor="#d1e0e0", zorder=-1, lw=0)
+    ax.add_feature(LAND, facecolor="#f5f5f5", lw=0)
+    ax.add_feature(BORDERS, lw=0.5, color="gray")
+    ax.gridlines(draw_labels=True, color="gray", alpha=0.5, ls="--")
+    ax.coastlines(resolution="50m", lw=0.5, color="gray")
+    #ax.plot(longs, lats, marker="o", transform=ccrs.Geodetic())
+    ax.scatter([network[x][x1].lon for x in range(len(network)) 
+                for x1 in range(len(network[x]))], 
+                [network[x][x1].lat for x in range(len(network)) 
+                for x1 in range(len(network[x]))], transform=ccrs.Geodetic(), s=0.2)
+    
+    #ax.stock_img()
+    fig.savefig("network points1.png")
 
 if __name__ == "__main__":
     get_weather_noaa.load_npz()
