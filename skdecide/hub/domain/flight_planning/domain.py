@@ -1,6 +1,8 @@
 import warnings
+import os, sys, argparse
 from argparse import Action
-from datetime import datetime, timedelta
+from argparse import Action
+from datetime import datetime, timedelta, date
 from enum import Enum
 from time import sleep
 from typing import Any, List, NamedTuple, Optional, Tuple, Union
@@ -25,6 +27,7 @@ from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
 from skdecide import ImplicitSpace
 from skdecide.utils import match_solvers
 
+from weather_interpolator.weather_tools.get_weather_noaa import get_weather_matrix
 from weather_interpolator.weather_tools.interpolator.GenericInterpolator import GenericWindInterpolator
 
 
@@ -115,7 +118,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             ICAO or IATA code of airport, or tuple (lat, lon)
         destination: Union[str, tuple]
             ICAO or IATA code of airport, or tuple (lat, lon)
-        aircraft : Aircraft
+        actype : Aircraft
             Describe the aircraft.
         windfield: pd.DataFrame
             Wind field data. Defaults to None.
@@ -208,7 +211,6 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         return state
 
     def _get_transition_value(
-        
         self,
         memory: D.T_state,
         action: D.T_event,
@@ -331,8 +333,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         if self.objective == "fuel" :
             tas = mach2tas(s.trajectory.iloc[-1]["mach"], s.trajectory.iloc[-1]["alt"])
             cost = (distance_to_goal/(tas*kts)) * self.fuel_flow(s.trajectory.iloc[-1]["mass"],
-                                  tas * kts,
-                                  s.trajectory.iloc[-1]["alt"] * ft)
+                                                                 tas * kts,
+                                                                 s.trajectory.iloc[-1]["alt"] * ft)
                                              
         if self.objective == "time" :
             cost = distance_to_goal/s.trajectory.iloc[-1]["mach"]
@@ -404,5 +406,174 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 )
         return pt
 
+    def solve(self, domain_factory, max_steps:int=100, debug:bool=False, make_img:bool = False):
+        solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
+        self.solve_with(solver,domain_factory)
+        pause_between_steps = None
+        max_steps = 100
+        observation = self.reset()
 
+        solver.reset()
+        clear_output(wait=True)
+        figure = self.render(observation)
+        plt.savefig("look")
+
+        # loop until max_steps or goal is reached
+        for i_step in range(1, max_steps + 1):
+            
+            if pause_between_steps is not None:
+                sleep(pause_between_steps)
+
+            # choose action according to solver
+            action = solver.sample_action(observation)
+            
+            # get corresponding action
+            outcome = self.step(action)
+            observation = outcome.observation
+            
+            print('step ', i_step)
+            print("policy = ", action)
+            print("New state = ", observation.pos)
+            if make_img : 
+                # update image
+                plt.clf()  # clear figure
+                clear_output(wait=True)
+                figure = self.render(observation)
+                plt.savefig(f'step_{i_step}')
+
+            # final state reached?
+            if self.is_terminal(observation):
+                break
+        if make_img  :
+            plt.savefig("terminal")
+            
+        # goal reached?
+        is_goal_reached = self.is_goal(observation)
+        terminal_state_constraints = self._get_terminal_state_time_fuel(observation)
+        if is_goal_reached :
+            if self.constraints['time'] is not None :
+                if self.constraints['time'][1] >= terminal_state_constraints['time'] :
+                    if self.constraints['fuel'] >= terminal_state_constraints['fuel'] :
+                        print(f"Goal reached after {i_step} steps!")
+                    else : 
+                        print(f"Goal reached after {i_step} steps, but there is not enough fuel remaining!")
+                else : 
+                    print(f"Goal reached after {i_step} steps, but not in the good timelapse!")
+            else :
+                if self.constraints['fuel'] >= terminal_state_constraints['fuel'] :
+                    print(f"Goal reached after {i_step} steps!")
+                else : 
+                    print(f"Goal reached after {i_step} steps, but there is not enough fuel remaining!")
+        else:
+            print(f"Goal not reached after {i_step} steps!")
+        solver._cleanup()       
+
+
+if __name__ == "__main__":
+    """_summary_
+        Example of launch : python domain.py -o LFPG -d WSSS -ac A388 -obj fuel -w 2023-01-13
+    """
+    
+    # Definition of command line arguments
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-deb','--debug', action='store_true')
+    parser.add_argument('-d','--destination', help='ICAO code of the destination', type=str)
+    parser.add_argument('-o','--origin', help='ICAO code of the origin', type=str)
+    parser.add_argument('-ac', '--aircraft', help='ICAO code of the aircraft', type=str)
+    parser.add_argument('-obj', '--objective', help='Objective for the flight (time, fuel, distance)', type=str)
+    parser.add_argument('-tcs', '--timeConstraintStart', help='Start Time constraint for the flight. The flight should arrive after that time')
+    parser.add_argument('-tce', '--timeConstraintEnd', help='End Time constraint for the flight. The flight should arrive before that time')
+    parser.add_argument('-w', '--weather', help='Weather day for the weather interpolator, format:YYYYMMDD', type=str)
+    args = parser.parse_args()
+    
+    # Retrieve arguments 
+    
+    if args.destination :
+        destination = args.destination
+    else : 
+        destination = 'LFBO' # Toulouse
+        destination = "EDDB" # Berlin
+        destination = "WSSS" # Singapour
+
+    if args.origin :
+        origin = args.origin
+    else : 
+        origin = 'LFPG' 
+    
+    debug = args.debug
+    
+    if args.aircraft :
+        ac = args.aircraft
+    else : 
+        ac = 'A388'
+
+    if args.objective :
+        objective = args.objective
+    else : 
+        objective = "fuel"
+        
+    if args.timeConstraintStart :
+        if args.timeConstraintEnd :
+            timeConstraint = (float(args.timeConstraintStart),float(args.timeConstraintEnd))
+        else : 
+            timeConstraint = (float(args.timeConstraintStart),0.0)
+    else:
+        if args.timeConstraintEnd :
+            timeConstraint = (0.0,float(args.timeConstraintEnd))
+        else :
+            timeConstraint = None
+
+    if args.weather :
+        if len(args.weather) != 8 :
+            weather={"year":'2023',
+                   "month":'01',
+                   "day":'13',
+                   "forecast":'nowcast'}
+        else :     
+            year = args.weather[0:4]
+            month = args.weather[4:6]
+            day = args.weather[6:8]
+            weather={"year":year,
+                    "month":month,
+                    "day":day,
+                    "forecast":'nowcast'}
+        print(weather)
+    else :
+        weather = None
+
+    # Define basic constraints
+    
+    maxFuel = aircraft(ac)['limits']['MFC']
+    constraints = {'time' : timeConstraint, # Aircraft should arrive before a given time (or in a given window)
+                   'fuel' : 0.97*maxFuel} # Aircraft should arrive with some fuel remaining  
+    
+    # Creating wind interpolator
+    if weather :            
+        wind_interpolator = None
+        mat = get_weather_matrix(year=weather["year"],
+                                month=weather["month"],
+                                day=weather["day"],
+                                forecast=weather["forecast"],
+                                delete_npz_from_local=False,
+                                delete_grib_from_local=False)
+        wind_interpolator = GenericWindInterpolator(file_npz=mat)
+    else : 
+        wind_interpolator = None
+    
+    # Creating the domain 
+    domain_factory = lambda: FlightPlanningDomain(origin, 
+                                                  destination, 
+                                                  ac, 
+                                                  constraints=constraints,
+                                                  wind_interpolator=wind_interpolator, 
+                                                  objective=objective,
+                                                  nb_points_forward=41,
+                                                  nb_points_lateral=11,
+                                                 )
+    domain = domain_factory()
+    
+    solvers = match_solvers(domain=domain)
+    domain.solve(domain_factory)  
+    
     
