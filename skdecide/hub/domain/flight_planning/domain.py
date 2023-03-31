@@ -406,7 +406,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 )
         return pt
 
-    def solve(self, domain_factory, max_steps:int=100, debug:bool=False, make_img:bool = False):
+    def solve(self, domain_factory, max_steps:int=100, debug:bool=False, make_img:bool = True):
         solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
         self.solve_with(solver,domain_factory)
         pause_between_steps = None
@@ -450,6 +450,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         # goal reached?
         is_goal_reached = self.is_goal(observation)
         terminal_state_constraints = self._get_terminal_state_time_fuel(observation)
+        print(terminal_state_constraints)
         if is_goal_reached :
             if self.constraints['time'] is not None :
                 if self.constraints['time'][1] >= terminal_state_constraints['time'] :
@@ -485,6 +486,7 @@ if __name__ == "__main__":
     parser.add_argument('-tcs', '--timeConstraintStart', help='Start Time constraint for the flight. The flight should arrive after that time')
     parser.add_argument('-tce', '--timeConstraintEnd', help='End Time constraint for the flight. The flight should arrive before that time')
     parser.add_argument('-w', '--weather', help='Weather day for the weather interpolator, format:YYYYMMDD', type=str)
+    parser.add_argument('-div', '--diversion', help='Boolean to put a diversion on the flight plan', action='store_true')
     args = parser.parse_args()
     
     # Retrieve arguments 
@@ -542,6 +544,7 @@ if __name__ == "__main__":
     else :
         weather = None
 
+    diversion = args.diversion
     # Define basic constraints
     
     maxFuel = aircraft(ac)['limits']['MFC']
