@@ -5,7 +5,7 @@ from argparse import Action
 from datetime import datetime, timedelta, date
 from enum import Enum
 from time import sleep
-from typing import Any, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, List, NamedTuple, Optional, Tuple, Union, Dict
 import xarray as xr
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -109,6 +109,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         constraints = None,
         nb_points_forward: int=41,
         nb_points_lateral: int=11,
+        fuel_loaded: float = 0.0
     ):
         """A simple class to compute a flight plan.
 
@@ -154,25 +155,43 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             self.nc,
         )
 
-        ac = aircraft(actype)
-        self.start = State(
-            pd.DataFrame(
-                [
-                    {
-                        "ts": 0,
-                        "lat": self.lat1,
-                        "lon": self.lon1,
-                        "mass": m0 * ac["limits"]["MTOW"],
-                        "mach": ac["cruise"]["mach"],
-                        "fuel": 0.0,
-                        "alt": ac["cruise"]["height"],
-                    }
-                ]
-            ),
-            (0, self.nc // 2),
-        )
+        self.ac = aircraft(actype)
+        if fuel_loaded == 0.0 :
+            self.start = State(
+                pd.DataFrame(
+                    [
+                        {
+                            "ts": 0,
+                            "lat": self.lat1,
+                            "lon": self.lon1,
+                            "mass": self.ac["limits"]["MTOW"],
+                            "mach": self.ac["cruise"]["mach"],
+                            "fuel": 0.0,
+                            "alt": self.ac["cruise"]["height"],
+                        }
+                    ]
+                ),
+                (0, self.nc // 2),
+            )
+        else : 
+            self.start = State(
+                pd.DataFrame(
+                    [
+                        {
+                            "ts": 0,
+                            "lat": self.lat1,
+                            "lon": self.lon1,
+                            "mass": self.ac["limits"]["MTOW"] - 0.8*(self.ac["limits"]["MFC"]-fuel_loaded),
+                            "mach": self.ac["cruise"]["mach"],
+                            "fuel": 0.0,
+                            "alt": self.ac["cruise"]["height"],
+                        }
+                    ]
+                ),
+                (0, self.nc // 2),
+            )
         self.fuel_flow = FuelFlow(actype).enroute
-
+        
     def _get_next_state(self, memory: D.T_state, action: D.T_event) -> D.T_state:
         """
         Compute the next state from:
@@ -268,8 +287,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             fuel += trajectory["fuel"]
         return {'time' : state.trajectory.iloc[-1]["ts"],
                 'fuel' : fuel}
-    
-    
+       
     def _is_terminal(self, state: State) -> D.T_predicate:
         """
         Indicate whether a state is terminal.
@@ -318,25 +336,27 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             self.lat1, self.lon1, self.lat2, self.lon2, memory.trajectory, self.wind_ds
         )
 
-    def heuristic(self, s: D.T_state) -> Value[D.T_value]:
+    def heuristic(self, s: D.T_state, objective : str = None) -> Value[D.T_value]:
         """Heuristic to be used by search algorithms.
             Depending on the objective and constraints. 
         """
+        if objective is None :
+            objective = self.objective
         lat = s.trajectory.iloc[-1]["lat"]
         lon = s.trajectory.iloc[-1]["lon"]
         # Compute distance in meters
         distance_to_goal = distance(lat, lon, self.lat2, self.lon2)
         
-        if self.objective == "distance" : 
+        if objective == "distance" : 
             cost = distance_to_goal
 
-        if self.objective == "fuel" :
+        if objective == "fuel" :
             tas = mach2tas(s.trajectory.iloc[-1]["mach"], s.trajectory.iloc[-1]["alt"])
             cost = (distance_to_goal/(tas*kts)) * self.fuel_flow(s.trajectory.iloc[-1]["mass"],
                                                                  tas * kts,
                                                                  s.trajectory.iloc[-1]["alt"] * ft)
                                              
-        if self.objective == "time" :
+        if objective == "time" :
             cost = distance_to_goal/s.trajectory.iloc[-1]["mach"]
 
         return Value(cost=cost)
@@ -406,6 +426,42 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 )
         return pt
 
+    def simple_fuel_loop(self, domain_factory,max_steps:int=100):
+
+        solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
+        self.solve_with(solver,domain_factory)
+        pause_between_steps = None
+        max_steps = 100
+        observation = self.reset()
+
+        solver.reset()
+        clear_output(wait=True)
+
+        # loop until max_steps or goal is reached
+        for i_step in range(1, max_steps + 1):
+            
+            if pause_between_steps is not None:
+                sleep(pause_between_steps)
+
+            # choose action according to solver
+            action = solver.sample_action(observation)
+            
+            # get corresponding action
+            outcome = self.step(action)
+            observation = outcome.observation
+            
+            if self.is_terminal(observation):
+                break   
+
+        # Retrieve fuel minimum fuel for the flight
+        fuel = self._get_terminal_state_time_fuel(observation)['fuel']
+        # Evaluate if there is a fuel constraint violation
+        enough_fuel = (fuel <= self.constraints["fuel"])
+        
+        solver._cleanup()
+        print(f'fuel : {fuel}, fuel loaded : {self.constraints["fuel"]}')
+        return (fuel,enough_fuel)
+    
     def solve(self, domain_factory, max_steps:int=100, debug:bool=False, make_img:bool = True):
         solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
         self.solve_with(solver,domain_factory)
@@ -469,10 +525,84 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             print(f"Goal not reached after {i_step} steps!")
         solver._cleanup()       
 
+def fuel_optimisation(origin : str,
+                      destination : str,
+                      ac : str,
+                      constraints : dict,
+                      wind_interpolator : GenericWindInterpolator,
+                      ) -> float:
+    """
+    Function to optimise the fuel loaded in the plane, doing multiple fuel loops to approach an optimal
+
+    Args:
+        origin (str): 
+            ICAO code of the departure airport of th flight plan e.g LFPG for Paris-CDG
+        
+        destination (str): 
+            ICAO code of the arrival airport of th flight plan e.g LFBO for Toulouse-Blagnac airport
+        
+        ac (str): 
+            Aircarft type describe in openap datas (https://github.com/junzis/openap/tree/master/openap/data/aircraft)
+        
+        constraints (dict): 
+            Constraints that will be defined for the flight plan 
+        
+        wind_interpolator (GenericWindInterpolator): 
+            Define the wind interpolator to use wind informations for the flight plan
+            
+        fuel_loaded (float):
+            Fuel loaded in the plane for the flight 
+    Returns:
+        float: 
+            Return the quantity of fuel to be loaded in the plane for the flight
+    """
+    
+    
+    fuel_remaining = True
+    step = 0
+    while fuel_remaining and step < 20 :
+        domain_factory = lambda: FlightPlanningDomain(origin, 
+                                                destination, 
+                                                ac, 
+                                                constraints=constraints,
+                                                wind_interpolator=wind_interpolator, 
+                                                objective="distance",
+                                                nb_points_forward=41,
+                                                nb_points_lateral=11,
+                                                fuel_loaded = constraints["fuel"]
+                                                )
+        domain = domain_factory()
+        
+        fuel_prec = constraints["fuel"]
+        constraints["fuel"],fuel_remaining = domain.simple_fuel_loop(domain_factory)
+        """if int(fuel_prec) == int(constraints["fuel"]) : 
+            break"""
+        step += 1
+    
+    print("outside")
+    while not fuel_remaining :
+        constraints["fuel"] = (fuel_prec + constraints["fuel"])/2
+        domain_factory = lambda: FlightPlanningDomain(origin, 
+                                                destination, 
+                                                ac, 
+                                                constraints=constraints,
+                                                wind_interpolator=wind_interpolator, 
+                                                objective="distance",
+                                                nb_points_forward=41,
+                                                nb_points_lateral=11,
+                                                fuel_loaded=constraints["fuel"]
+                                                )
+        domain = domain_factory()
+        
+        _,fuel_remaining = domain.simple_fuel_loop(domain_factory)
+        
+        
+    return constraints["fuel"]
+
 
 if __name__ == "__main__":
-    """_summary_
-        Example of launch : python domain.py -o LFPG -d WSSS -ac A388 -obj fuel -w 2023-01-13
+    """
+    Example of launch : python domain.py -o LFPG -d WSSS -ac A388 -obj fuel -w 2023-01-13
     """
     
     # Definition of command line arguments
@@ -487,6 +617,11 @@ if __name__ == "__main__":
     parser.add_argument('-tce', '--timeConstraintEnd', help='End Time constraint for the flight. The flight should arrive before that time')
     parser.add_argument('-w', '--weather', help='Weather day for the weather interpolator, format:YYYYMMDD', type=str)
     parser.add_argument('-div', '--diversion', help='Boolean to put a diversion on the flight plan', action='store_true')
+    parser.add_argument('-fl', '--fuelLoop', help='If this option is selected, there will be a first loop to optimise the fuel loaded in the plane',action='store_true')
+    
+    
+    
+    
     args = parser.parse_args()
     
     # Retrieve arguments 
@@ -532,7 +667,7 @@ if __name__ == "__main__":
                    "month":'01',
                    "day":'13',
                    "forecast":'nowcast'}
-        else :     
+        else : 
             year = args.weather[0:4]
             month = args.weather[4:6]
             day = args.weather[6:8]
@@ -545,11 +680,12 @@ if __name__ == "__main__":
         weather = None
 
     diversion = args.diversion
-    # Define basic constraints
+    fuel_loop = args.fuelLoop
+    # Define basic constraints 
     
     maxFuel = aircraft(ac)['limits']['MFC']
     constraints = {'time' : timeConstraint, # Aircraft should arrive before a given time (or in a given window)
-                   'fuel' : 0.97*maxFuel} # Aircraft should arrive with some fuel remaining  
+                   'fuel' : maxFuel} # Aircraft should arrive with some fuel remaining  
     
     # Creating wind interpolator
     if weather :            
@@ -564,6 +700,18 @@ if __name__ == "__main__":
     else : 
         wind_interpolator = None
     
+    # Doing the fuel loop if requested
+    
+    if fuel_loop :
+        fuel_loaded = fuel_optimisation(origin, destination, ac, constraints, wind_interpolator)
+        # Adding fuel reserve (we can't put more fuel than maxFuel)
+        fuel_loaded = min(1.1 * fuel_loaded,maxFuel)
+    else :
+        fuel_loaded = maxFuel
+        
+    
+    constraints["fuel"] = 0.97* fuel_loaded # Update of the maximum fuel there is to be used
+    print(f'\n*********************\nFuel loaded : {fuel_loaded}, maximum fuel : {constraints["fuel"]}\n*********************\n')
     # Creating the domain 
     domain_factory = lambda: FlightPlanningDomain(origin, 
                                                   destination, 
@@ -573,10 +721,12 @@ if __name__ == "__main__":
                                                   objective=objective,
                                                   nb_points_forward=41,
                                                   nb_points_lateral=11,
+                                                  fuel_loaded=fuel_loaded
                                                  )
     domain = domain_factory()
     
     solvers = match_solvers(domain=domain)
+    
     domain.solve(domain_factory)  
     
     
