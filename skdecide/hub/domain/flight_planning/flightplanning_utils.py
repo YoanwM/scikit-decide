@@ -71,18 +71,18 @@ def flying(
             wind_ms = ds.interpol_wind_classic(
                 lat=pos["lat"],
                 longi=pos["lon"],
-                alt=pos["alt"],
+                alt=pos["alt"] * 3.28084,
                 t=time
             )
             we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
 
         wdir = (degrees(atan2(we, wn)) + 180) % 360
         wspd = sqrt(wn * wn + we * we)
-
+        
         tas = aero.mach2tas(pos["mach"], pos["alt"])  # 400
 
         wca = asin((wspd / tas) * sin(radians(bearing - wdir)))
-
+        
         # ground_speed = sqrt(
         #     tas * tas
         #     + wspd * wspd

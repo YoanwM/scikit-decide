@@ -342,6 +342,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         """
         if objective is None :
             objective = self.objective
+
         lat = s.trajectory.iloc[-1]["lat"]
         lon = s.trajectory.iloc[-1]["lon"]
         # Compute distance in meters
@@ -350,7 +351,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         if objective == "distance" : 
             cost = distance_to_goal
 
-        if objective == "fuel" :
+        if objective == "fuel" : #ajouter bearing
+            
             tas = mach2tas(s.trajectory.iloc[-1]["mach"], s.trajectory.iloc[-1]["alt"])
             cost = (distance_to_goal/(tas*kts)) * self.fuel_flow(s.trajectory.iloc[-1]["mass"],
                                                                  tas * kts,
@@ -428,7 +430,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
     def simple_fuel_loop(self, domain_factory,max_steps:int=100):
 
-        solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
+        solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=False)
         self.solve_with(solver,domain_factory)
         pause_between_steps = None
         max_steps = 100
@@ -556,11 +558,11 @@ def fuel_optimisation(origin : str,
         float: 
             Return the quantity of fuel to be loaded in the plane for the flight
     """
-    
-    
+     
     fuel_remaining = True
+    small_diff = False
     step = 0
-    while fuel_remaining and step < 20 :
+    while fuel_remaining and step < 20 and not small_diff:
         domain_factory = lambda: FlightPlanningDomain(origin, 
                                                 destination, 
                                                 ac, 
@@ -575,12 +577,12 @@ def fuel_optimisation(origin : str,
         
         fuel_prec = constraints["fuel"]
         constraints["fuel"],fuel_remaining = domain.simple_fuel_loop(domain_factory)
-        """if int(fuel_prec) == int(constraints["fuel"]) : 
-            break"""
         step += 1
+        small_diff = ((fuel_prec - constraints['fuel']) <= (1/1000))
+        print(f'Step : {step}, small diff = {small_diff}')
+
     
-    print("outside")
-    while not fuel_remaining :
+    """while not fuel_remaining :
         constraints["fuel"] = (fuel_prec + constraints["fuel"])/2
         domain_factory = lambda: FlightPlanningDomain(origin, 
                                                 destination, 
@@ -596,7 +598,7 @@ def fuel_optimisation(origin : str,
         
         _,fuel_remaining = domain.simple_fuel_loop(domain_factory)
         
-        
+ """       
     return constraints["fuel"]
 
 
@@ -712,6 +714,7 @@ if __name__ == "__main__":
     
     constraints["fuel"] = 0.97* fuel_loaded # Update of the maximum fuel there is to be used
     print(f'\n*********************\nFuel loaded : {fuel_loaded}, maximum fuel : {constraints["fuel"]}\n*********************\n')
+    
     # Creating the domain 
     domain_factory = lambda: FlightPlanningDomain(origin, 
                                                   destination, 
