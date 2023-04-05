@@ -1,12 +1,10 @@
 import warnings
-import os, sys, argparse
+import argparse
 from argparse import Action
 from argparse import Action
-from datetime import datetime, timedelta, date
 from enum import Enum
 from time import sleep
 from typing import Any, List, NamedTuple, Optional, Tuple, Union, Dict
-import xarray as xr
 import matplotlib.pyplot as plt
 import pandas as pd
 from flightplanning_utils import (
@@ -20,7 +18,7 @@ from openap.fuel import FuelFlow
 from openap.prop import aircraft
 from pygeodesy.ellipsoidalVincenty import LatLon
 
-from skdecide import DeterministicPlanningDomain, Space, Value, Domain
+from skdecide import DeterministicPlanningDomain, Space, Value
 from skdecide.builders.domain import Renderable, UnrestrictedActions
 from skdecide.hub.solver.astar import Astar
 from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
@@ -32,6 +30,9 @@ from weather_interpolator.weather_tools.interpolator.GenericInterpolator import 
 
 
 class State:
+    """
+    Definition of a aircraft state during the flight plan
+    """
     trajectory: pd.DataFrame
     pos: Tuple[int, int]
 
@@ -74,6 +75,9 @@ class State:
             {self.trajectory.iloc[-1]['mass']:.2f}]"
 
 class Action(Enum):
+    """
+    Action that can be perform by the aircraft (in a graph)
+    """
     up = -1
     straight = 0
     down = 1
@@ -103,42 +107,52 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         origin: Union[str, tuple],
         destination: Union[str, tuple],
         actype: str,
-        m0: float = 0.8,
         wind_interpolator: GenericWindInterpolator = None,
-        objective: Union[str, tuple] = "fuel",
+        objective: str = "fuel",
         constraints = None,
         nb_points_forward: int=41,
         nb_points_lateral: int=11,
-        fuel_loaded: float = 0.0
+        fuel_loaded: float = None
     ):
-        """A simple class to compute a flight plan.
+        """
+        Initialisation of a instance of flight planning that will be computed
 
-        Parameters
-        ----------
-        origin: Union[str, tuple])
-            ICAO or IATA code of airport, or tuple (lat, lon)
-        destination: Union[str, tuple]
-            ICAO or IATA code of airport, or tuple (lat, lon)
-        actype : Aircraft
-            Describe the aircraft.
-        windfield: pd.DataFrame
-            Wind field data. Defaults to None.
-        objective: str
-            The objective of the flight. Defaults to "fuel".
+        Args:
+            origin (Union[str, tuple]): 
+                ICAO code of the airport, or a tuple (lat,lon), of the origin of the flight plan
+            destination (Union[str, tuple]): 
+                ICAO code of the airport, or a tuple (lat,lon), of the destination of the flight plan
+            actype (str): 
+                Aircarft type describe in openap datas (https://github.com/junzis/openap/tree/master/openap/data/aircraft)
+            wind_interpolator (GenericWindInterpolator, optional): 
+                Wind interpolator for the flight plan. Defaults to None.
+            objective (str, optional): 
+                Objective of the flight plan, it will also guide the aircraft through the graph with a defined heuristic. It can be fuel, distance or time. Defaults to "fuel".
+            constraints (_type_, optional): 
+                Constraints dictionnary (keyValues : ['time', 'fuel'] ) to be defined in for the flight plan. Defaults to None.
+            nb_points_forward (int, optional): 
+                Number of forward nodes in the graph. Defaults to 41.
+            nb_points_lateral (int, optional): 
+                Number of lateral nodes in the graph. Defaults to 11.
+            fuel_loaded (float, optional): 
+                Fuel loaded in the aricraft for the flight plan. Defaults to 0.0.
         """
         
-        if isinstance(origin, str):
+        # Initialisation of the origin and the destination    
+        if isinstance(origin, str): # Origin is an airport
             ap1 = airport(origin)
             self.lat1, self.lon1 = ap1["lat"], ap1["lon"]
-        else:
+        else: # Origin is geographic coordinates 
             self.lat1, self.lon1 = origin
 
-        if isinstance(destination, str):
+        if isinstance(destination, str): # Origin is an airport
             ap2 = airport(destination)
             self.lat2, self.lon2 = ap2["lat"], ap2["lon"]
-        else:
+        else: # Origin is geographic coordinates 
             self.lat2, self.lon2 = destination
-        #
+        
+        
+        # Initialisation of the objective, the constraints and the wind interpolator
         self.objective = objective
         self.constraints = constraints
         self.wind_ds = None
@@ -155,33 +169,38 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             self.nc,
         )
 
+        # Retrieve the aircraft datas in openap library
+        
         self.ac = aircraft(actype)
-        if fuel_loaded == 0.0 :
+        
+        # Initialisation of the flight plan, with the iniatial state
+        assert(fuel_loaded <= self.ac["limits"]['MFC'])
+        if not fuel_loaded :
             self.start = State(
                 pd.DataFrame(
                     [
                         {
-                            "ts": 0,
-                            "lat": self.lat1,
-                            "lon": self.lon1,
-                            "mass": self.ac["limits"]["MTOW"],
-                            "mach": self.ac["cruise"]["mach"],
-                            "fuel": 0.0,
-                            "alt": self.ac["cruise"]["height"],
+                            "ts": 0, # time of the flight plan, initialised to 0
+                            "lat": self.lat1, # latitude of the origin of the flight plan
+                            "lon": self.lon1, # longitude of the origin of the flight plan
+                            "mass": self.ac["limits"]["MTOW"], # Initialisation of the mass of the aircraft, here with all fuel loaded we reached Maximum TakeOff Weight
+                            "mach": self.ac["cruise"]["mach"], # Initialisation of the speed of the aircraft, in mach
+                            "fuel": 0.0, # Fuel consummed initialisation 
+                            "alt": self.ac["cruise"]["height"], # Altitude of the origin, in meters
                         }
                     ]
                 ),
                 (0, self.nc // 2),
             )
         else : 
-            self.start = State(
+            self.start = State( # Same initialisation than above
                 pd.DataFrame(
                     [
                         {
                             "ts": 0,
                             "lat": self.lat1,
                             "lon": self.lon1,
-                            "mass": self.ac["limits"]["MTOW"] - 0.8*(self.ac["limits"]["MFC"]-fuel_loaded),
+                            "mass": self.ac["limits"]["MTOW"] - 0.8*(self.ac["limits"]["MFC"]-fuel_loaded), # Here we compute the weight difference between the fuel loaded and the fuel capacity
                             "mach": self.ac["cruise"]["mach"],
                             "fuel": 0.0,
                             "alt": self.ac["cruise"]["height"],
@@ -190,6 +209,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 ),
                 (0, self.nc // 2),
             )
+        print(f"Start : {self.start}")
+        # Definition of the fuel consumption function 
         self.fuel_flow = FuelFlow(actype).enroute
         
     def _get_next_state(self, memory: D.T_state, action: D.T_event) -> D.T_state:
@@ -527,21 +548,16 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             print(f"Goal not reached after {i_step} steps!")
         solver._cleanup()       
 
-def fuel_optimisation(origin : str,
-                      destination : str,
-                      ac : str,
-                      constraints : dict,
-                      wind_interpolator : GenericWindInterpolator,
-                      ) -> float:
+def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple], ac : str, constraints : dict, wind_interpolator : GenericWindInterpolator) -> float:
     """
     Function to optimise the fuel loaded in the plane, doing multiple fuel loops to approach an optimal
 
     Args:
-        origin (str): 
-            ICAO code of the departure airport of th flight plan e.g LFPG for Paris-CDG
+        origin (Union[str, tuple]): 
+            ICAO code of the departure airport of th flight plan e.g LFPG for Paris-CDG, or a tuple (lat,lon)
         
-        destination (str): 
-            ICAO code of the arrival airport of th flight plan e.g LFBO for Toulouse-Blagnac airport
+        destination (Union[str, tuple]): 
+            ICAO code of the arrival airport of th flight plan e.g LFBO for Toulouse-Blagnac airport, or a tuple (lat,lon)
         
         ac (str): 
             Aircarft type describe in openap datas (https://github.com/junzis/openap/tree/master/openap/data/aircraft)
@@ -579,26 +595,7 @@ def fuel_optimisation(origin : str,
         constraints["fuel"],fuel_remaining = domain.simple_fuel_loop(domain_factory)
         step += 1
         small_diff = ((fuel_prec - constraints['fuel']) <= (1/1000))
-        print(f'Step : {step}, small diff = {small_diff}')
-
     
-    """while not fuel_remaining :
-        constraints["fuel"] = (fuel_prec + constraints["fuel"])/2
-        domain_factory = lambda: FlightPlanningDomain(origin, 
-                                                destination, 
-                                                ac, 
-                                                constraints=constraints,
-                                                wind_interpolator=wind_interpolator, 
-                                                objective="distance",
-                                                nb_points_forward=41,
-                                                nb_points_lateral=11,
-                                                fuel_loaded=constraints["fuel"]
-                                                )
-        domain = domain_factory()
-        
-        _,fuel_remaining = domain.simple_fuel_loop(domain_factory)
-        
- """       
     return constraints["fuel"]
 
 
@@ -729,7 +726,7 @@ if __name__ == "__main__":
     domain = domain_factory()
     
     solvers = match_solvers(domain=domain)
-    
+
     domain.solve(domain_factory)  
     
     
