@@ -4,14 +4,17 @@ from argparse import Action
 from enum import Enum
 from time import sleep
 from typing import Any, List, NamedTuple, Optional, Tuple, Union, Dict
+import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import pandas as pd
 from flightplanning_utils import (
-    flying,
     plot_trajectory,
+    plot_network
 )
+from math import asin, atan2, cos, degrees, radians, sin, sqrt
 from IPython.display import clear_output
-from openap.extra.aero import distance, mach2tas, kts, ft
+from openap.extra.aero import distance, mach2tas, kts, ft, atmos, latlon
+from openap.extra.aero import bearing as aero_bearing
 from openap.extra.nav import airport
 from openap.fuel import FuelFlow
 from openap.prop import aircraft
@@ -143,13 +146,13 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         # Initialisation of the origin and the destination    
         if isinstance(origin, str): # Origin is an airport
             ap1 = airport(origin)
-            self.lat1, self.lon1 = ap1["lat"], ap1["lon"]
+            self.lat1, self.lon1, self.alt1 = ap1["lat"], ap1["lon"], ap1["alt"]
         else: # Origin is geographic coordinates 
             self.lat1, self.lon1 = origin
 
         if isinstance(destination, str): # Destination is an airport
             ap2 = airport(destination)
-            self.lat2, self.lon2 = ap2["lat"], ap2["lon"]
+            self.lat2, self.lon2, self.alt2 = ap2["lat"], ap2["lon"], ap2["alt"]
         else: # Destination is geographic coordinates 
             self.lat2, self.lon2 = destination
         
@@ -164,16 +167,20 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         # Build network between top of climb and destination airport
         self.nb_forward_points = nb_forward_points
         self.nb_lateral_points = nb_lateral_points
+        self.nb_vertical_points = nb_vertical_points
         self.network = self.get_network(
-            LatLon(self.lat1, self.lon1),
-            LatLon(self.lat2, self.lon2),
+            LatLon(self.lat1, self.lon1, self.alt1),
+            LatLon(self.lat2, self.lon2, self.alt2),
             self.nb_forward_points,
             self.nb_lateral_points,
+            self.nb_vertical_points
         )
 
-        # Retrieve the aircraft datas in openap library
+        # Retrieve the aircraft datas in openap library and normalizing into ft
         
         self.ac = aircraft(actype)
+        self.ac['limits']['ceiling'] /= ft
+        self.ac['cruise']['height'] /= ft
         
         # Initialisation of the flight plan, with the iniatial state
         assert(fuel_loaded <= self.ac["limits"]['MFC']) # Ensure fuel loaded < fuel capacity
@@ -188,7 +195,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                             "mass": self.ac["limits"]["MTOW"], # Initialisation of the mass of the aircraft, here with all fuel loaded we reached Maximum TakeOff Weight
                             "mach": self.ac["cruise"]["mach"], # Initialisation of the speed of the aircraft, in mach
                             "fuel": 0.0, # Fuel consummed initialisation 
-                            "alt": self.ac["cruise"]["height"], # Altitude of the origin, in meters
+                            "alt": self.alt1, # Altitude of the origin, in ft
                         }
                     ]
                 ),
@@ -205,7 +212,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                             "mass": self.ac["limits"]["MTOW"] - 0.8*(self.ac["limits"]["MFC"]-fuel_loaded), # Here we compute the weight difference between the fuel loaded and the fuel capacity
                             "mach": self.ac["cruise"]["mach"],
                             "fuel": 0.0,
-                            "alt": self.ac["cruise"]["height"],
+                            "alt": self.alt1,
                         }
                     ]
                 ),
@@ -214,6 +221,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         print(f"Start : {self.start}")
         # Definition of the fuel consumption function 
         self.fuel_flow = FuelFlow(actype).enroute
+    
+    # Class functions 
         
     def _get_next_state(self, memory: D.T_state, action: D.T_event) -> D.T_state:
         """
@@ -242,9 +251,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
         to_lat = self.network[next_x][next_y].lat
         to_lon = self.network[next_x][next_y].lon
-        trajectory = flying(
-            trajectory.tail(1), (to_lat, to_lon), self.wind_ds, self.fuel_flow
-        )
+        trajectory = self.flying(
+            trajectory.tail(1), (to_lat, to_lon))
 
         state = State(
             pd.concat([memory.trajectory, trajectory], ignore_index=True),
@@ -375,7 +383,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             cost = distance_to_goal
 
         if objective == "fuel" : #ajouter bearing
-            
+    
             tas = mach2tas(s.trajectory.iloc[-1]["mach"], s.trajectory.iloc[-1]["alt"])
             cost = (distance_to_goal/(tas*kts)) * self.fuel_flow(s.trajectory.iloc[-1]["mass"],
                                                                  tas * kts,
@@ -386,9 +394,11 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
         return Value(cost=cost)
 
-    def get_network(self, p0: LatLon, p1: LatLon, nb_forward_points: int, nb_lateral_points: int):
+    def get_network(self, p0: LatLon, p1: LatLon, nb_forward_points: int, nb_lateral_points: int, nb_vertical_points: int):
+        
         half_forward_points = nb_forward_points // 2
         half_lateral_points = nb_lateral_points // 2
+        half_vertical_points = nb_vertical_points // 2
 
         distp = 10 * p0.distanceTo(p1) / nb_forward_points / nb_lateral_points  # meters
 
@@ -487,17 +497,15 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         print(f'fuel : {fuel}, fuel loaded : {self.constraints["fuel"]}')
         return (fuel,enough_fuel)
     
-    def solve(self, domain_factory, max_steps:int=100, debug:bool=False, make_img:bool = True):
+    def solve(self, domain_factory, max_steps:int=100, debug:bool=False, make_img:bool = False):
         solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
         self.solve_with(solver,domain_factory)
         pause_between_steps = None
         max_steps = 100
         observation = self.reset()
-
+        
         solver.reset()
         clear_output(wait=True)
-        figure = self.render(observation)
-        plt.savefig("look")
 
         # loop until max_steps or goal is reached
         for i_step in range(1, max_steps + 1):
@@ -519,15 +527,14 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 # update image
                 plt.clf()  # clear figure
                 clear_output(wait=True)
-                figure = self.render(observation)
-                plt.savefig(f'step_{i_step}')
+                figure=self.render(observation)
+                #plt.savefig(f'step_{i_step}')
 
             # final state reached?
             if self.is_terminal(observation):
                 break
         if make_img  :
             plt.savefig("terminal")
-            
         # goal reached?
         is_goal_reached = self.is_goal(observation)
         terminal_state_constraints = self._get_terminal_state_time_fuel(observation)
@@ -549,6 +556,98 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         else:
             print(f"Goal not reached after {i_step} steps!")
         solver._cleanup()       
+
+    def flying(self, from_: pd.DataFrame, to_: Tuple[float, float]) -> pd.DataFrame:
+        """Compute the trajectory of a flying object from a given point to a given point
+
+        Args:
+            from_ (pd.DataFrame): the trajectory of the object so far
+            to_ (Tuple[float, float]): the destination of the object
+            ds (xr.Dataset): dataset containing the wind field
+            fflow (Callable): fuel flow function
+
+        Returns:
+            pd.DataFrame: the final trajectory of the object
+        """
+        pos = from_.to_dict("records")[0]
+        print(pos["alt"])
+        dist_ = distance(pos["lat"], pos["lon"], to_[0], to_[1], pos["alt"])
+        data = []
+        epsilon = 100
+        dt = 600
+        dist = dist_
+        loop = 0
+        while dist > epsilon:  
+            bearing = aero_bearing(pos["lat"], pos["lon"], to_[0], to_[1])
+            p, _, _ = atmos(pos["alt"] * ft)
+            isobaric = p / 100
+            we, wn = 0, 0
+            if self.wind_ds:
+                time = pos["ts"]
+                wind_ms = self.wind_ds.interpol_wind_classic(
+                    lat=pos["lat"],
+                    longi=pos["lon"],
+                    alt=pos["alt"],
+                    t=time
+                )
+                we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
+
+            wdir = (degrees(atan2(we, wn)) + 180) % 360
+            wspd = sqrt(wn * wn + we * we)
+            
+            tas = mach2tas(pos["mach"], pos["alt"])  # 400
+
+            wca = asin((wspd / tas) * sin(radians(bearing - wdir)))
+
+            heading = (360 + bearing - degrees(wca)) % 360
+
+            gsn = tas * cos(radians(heading)) - wn
+            gse = tas * sin(radians(heading)) - we
+
+            gs = sqrt(gsn * gsn + gse * gse) # ground speed
+            
+            if gs*dt > dist :
+                # Last step. make sure we go to destination.
+                dt = dist/gs
+                ll = to_[0], to_[1]
+            else:
+                brg = degrees(atan2(gse, gsn)) % 360.0
+                ll = latlon(pos["lat"], pos["lon"], gs * dt, brg, pos["alt"])
+            pos["fuel"] = dt * self.fuel_flow(pos["mass"], 
+                                    tas / kts, 
+                                    pos["alt"] * ft, 
+                                    path_angle=0.0)
+            mass = pos["mass"] - pos["fuel"]
+
+            new_row = {
+                "ts": pos["ts"] + dt,
+                "lat": ll[0],
+                "lon": ll[1],
+                "mass": mass,
+                "mach": pos["mach"],
+                "fuel": pos["fuel"],
+                "alt": pos["alt"], # to be modified
+            }
+
+            # New distance to the next 'checkpoint'
+            dist = distance(new_row["lat"], new_row["lon"], 
+                            to_[0], to_[1], new_row["alt"])
+            
+            #print("Dist : %f Dist_ : %f " %(dist,dist_))
+            if dist < dist_:
+                #print("Fuel new_row : %f" %new_row["fuel"])
+                data.append(new_row)
+                dist_ = dist
+                pos = data[-1]
+            else:
+                dt = int(dt / 10)
+                print("going in the wrong part.")
+                assert dt > 0
+
+            loop += 1
+
+        return pd.DataFrame(data)
+
 
 def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple], ac : str, constraints : dict, wind_interpolator : GenericWindInterpolator) -> float:
     """
@@ -619,7 +718,7 @@ if __name__ == "__main__":
     parser.add_argument('-w', '--weather', help='Weather day for the weather interpolator, format:YYYYMMDD', type=str)
     parser.add_argument('-div', '--diversion', help='Boolean to put a diversion on the flight plan', action='store_true')
     parser.add_argument('-fl', '--fuelLoop', help='If this option is selected, there will be a first loop to optimise the fuel loaded in the plane',action='store_true')
-    
+    parser.add_argument('-img', '--images', help='Saving images from the flight plan e.g. Network points, terminal trajectory...', action='store_true')
     
     
     
@@ -676,12 +775,14 @@ if __name__ == "__main__":
                     "month":month,
                     "day":day,
                     "forecast":'nowcast'}
-        print(weather)
     else :
         weather = None
 
     diversion = args.diversion
     fuel_loop = args.fuelLoop
+    make_img = args.images
+    
+    
     # Define basic constraints 
     
     maxFuel = aircraft(ac)['limits']['MFC']
@@ -726,9 +827,8 @@ if __name__ == "__main__":
                                                   fuel_loaded=fuel_loaded
                                                  )
     domain = domain_factory()
-    
+    plot_network(domain)
     solvers = match_solvers(domain=domain)
 
-    domain.solve(domain_factory)  
-    
+    domain.solve(domain_factory,make_img=make_img)  
     
