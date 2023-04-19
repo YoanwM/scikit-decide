@@ -30,6 +30,14 @@ from skdecide.utils import match_solvers
 from weather_interpolator.weather_tools.get_weather_noaa import get_weather_matrix
 from weather_interpolator.weather_tools.interpolator.GenericInterpolator import GenericWindInterpolator
 
+class Phase(Enum):
+    """
+    Definition of the flight phases
+
+    """
+    climb = 1
+    cruise = 2
+    descent = 3
 
 class State:
     """
@@ -140,7 +148,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             nb_points_vertical (int, optional):
                 Number of vertical nodes in the graph. Defaults to 11.
             fuel_loaded (float, optional): 
-                Fuel loaded in the aricraft for the flight plan. Defaults to 0.0.
+                Fuel loaded in the aricraft for the flight plan. Defaults to None.
         """
         
         # Initialisation of the origin and the destination    
@@ -221,6 +229,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         print(f"Start : {self.start}")
         # Definition of the fuel consumption function 
         self.fuel_flow = FuelFlow(actype).enroute
+        self.phase = 'Climb'
     
     # Class functions 
         
@@ -556,21 +565,18 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         else:
             print(f"Goal not reached after {i_step} steps!")
         solver._cleanup()       
-
+    
     def flying(self, from_: pd.DataFrame, to_: Tuple[float, float]) -> pd.DataFrame:
         """Compute the trajectory of a flying object from a given point to a given point
 
         Args:
             from_ (pd.DataFrame): the trajectory of the object so far
             to_ (Tuple[float, float]): the destination of the object
-            ds (xr.Dataset): dataset containing the wind field
-            fflow (Callable): fuel flow function
 
         Returns:
             pd.DataFrame: the final trajectory of the object
         """
         pos = from_.to_dict("records")[0]
-        print(pos["alt"])
         dist_ = distance(pos["lat"], pos["lon"], to_[0], to_[1], pos["alt"])
         data = []
         epsilon = 100
