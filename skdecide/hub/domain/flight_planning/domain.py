@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from flightplanning_utils import (
     plot_trajectory,
-    plot_network
+    plot_network,
+    plot_altitude
 )
 from math import asin, atan2, cos, degrees, radians, sin, sqrt
 from IPython.display import clear_output
@@ -30,21 +31,13 @@ from skdecide.utils import match_solvers
 from weather_interpolator.weather_tools.get_weather_noaa import get_weather_matrix
 from weather_interpolator.weather_tools.interpolator.GenericInterpolator import GenericWindInterpolator
 
-class Phase(Enum):
-    """
-    Definition of the flight phases
-
-    """
-    climb = 1
-    cruise = 2
-    descent = 3
 
 class State:
     """
     Definition of a aircraft state during the flight plan
     """
     trajectory: pd.DataFrame
-    pos: Tuple[int, int]
+    pos: Tuple[int, int, int]
 
     def __init__(self, trajectory, pos):
         self.trajectory = trajectory
@@ -60,22 +53,22 @@ class State:
     
     def __hash__(self):
         return hash((self.pos,
-                     self.mass,
+                     int(self.mass),
                      self.alt,
-                     self.time))
+                     int(self.time)))
 
     def __eq__(self, other):
         return (self.pos == other.pos and 
-                self.mass == other.mass and 
+                int(self.mass) == int(other.mass) and 
                 self.alt == other.alt and 
-                self.time == other.time 
+                int(self.time) == int(other.time) 
                 )
 
     def __ne__(self, other):
         return (self.pos != other.pos or 
-                self.mass != other.mass or 
+                int(self.mass) != int(other.mass) or 
                 self.alt != other.alt or 
-                self.time != other.time 
+                int(self.time) != int(other.time) 
                 )
 
     def __str__(self):
@@ -84,13 +77,22 @@ class State:
             {self.trajectory.iloc[-1]['alt']:.2f} \
             {self.trajectory.iloc[-1]['mass']:.2f}]"
 
-class Action(Enum):
+class H_Action(Enum):
     """
-    Action that can be perform by the aircraft (in a graph)
+    Horizontal action that can be perform by the aircraft 
     """
     up = -1
     straight = 0
     down = 1
+
+class V_Action(Enum):
+    """
+    Vertical action that can be perform by the aircraft
+
+    """
+    climb = 1
+    cruise = 0
+    descent = -1
 
 class D(DeterministicPlanningDomain, UnrestrictedActions, Renderable):
     T_state = State  # Type of states
@@ -105,7 +107,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
     
     T_state = State  # Type of states
     T_observation = State  # Type of observations
-    T_event = Action  # Type of events
+    T_event = Tuple[H_Action,V_Action]  # Type of events
     T_value = float  # Type of transition values (rewards or costs)
     T_predicate = bool  # Type of transition predicates (terminal states)
     T_info = None  # Type of additional information in environment outcome
@@ -122,8 +124,9 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         constraints = None,
         nb_forward_points: int=41,
         nb_lateral_points: int=11,
-        nb_vertical_points: int=11,
-        fuel_loaded: float = None
+        nb_vertical_points: int=None,
+        fuel_loaded: float = None,
+        mach: float = None
     ):
         """
         Initialisation of a instance of flight planning that will be computed
@@ -146,9 +149,11 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             nb_points_lateral (int, optional): 
                 Number of lateral nodes in the graph. Defaults to 11.
             nb_points_vertical (int, optional):
-                Number of vertical nodes in the graph. Defaults to 11.
+                Number of vertical nodes in the graph. Defaults to None.
             fuel_loaded (float, optional): 
                 Fuel loaded in the aricraft for the flight plan. Defaults to None.
+            mach (float, optional):
+                Speed of the aircraft calculated for the flight. Defaults to None
         """
         
         # Initialisation of the origin and the destination    
@@ -164,7 +169,14 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         else: # Destination is geographic coordinates 
             self.lat2, self.lon2 = destination
         
-        
+        # Retrieve the aircraft datas in openap library and normalizing meters into ft
+        self.ac = aircraft(actype)
+        self.ac['limits']['ceiling'] /= ft
+        self.ac['cruise']['height'] /= ft
+        if mach :
+            self.mach = mach
+        else :
+            self.mach = self.ac['cruise']['mach']
         # Initialisation of the objective, the constraints and the wind interpolator
         self.objective = objective
         self.constraints = constraints
@@ -175,7 +187,10 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         # Build network between top of climb and destination airport
         self.nb_forward_points = nb_forward_points
         self.nb_lateral_points = nb_lateral_points
-        self.nb_vertical_points = nb_vertical_points
+        if nb_vertical_points :
+            self.nb_vertical_points = nb_vertical_points
+        else :
+            self.nb_vertical_points = int((self.ac['limits']['ceiling'] - self.ac['cruise']['height']) / 1000) + 1
         self.network = self.get_network(
             LatLon(self.lat1, self.lon1, self.alt1),
             LatLon(self.lat2, self.lon2, self.alt2),
@@ -183,12 +198,6 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             self.nb_lateral_points,
             self.nb_vertical_points
         )
-
-        # Retrieve the aircraft datas in openap library and normalizing into ft
-        
-        self.ac = aircraft(actype)
-        self.ac['limits']['ceiling'] /= ft
-        self.ac['cruise']['height'] /= ft
         
         # Initialisation of the flight plan, with the iniatial state
         assert(fuel_loaded <= self.ac["limits"]['MFC']) # Ensure fuel loaded < fuel capacity
@@ -201,13 +210,13 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                             "lat": self.lat1, # latitude of the origin of the flight plan
                             "lon": self.lon1, # longitude of the origin of the flight plan
                             "mass": self.ac["limits"]["MTOW"], # Initialisation of the mass of the aircraft, here with all fuel loaded we reached Maximum TakeOff Weight
-                            "mach": self.ac["cruise"]["mach"], # Initialisation of the speed of the aircraft, in mach
+                            "mach": mach, # Initialisation of the speed of the aircraft, in mach
                             "fuel": 0.0, # Fuel consummed initialisation 
                             "alt": self.alt1, # Altitude of the origin, in ft
                         }
                     ]
                 ),
-                (0, self.nb_lateral_points // 2), # Initial node in the graph
+                (0, self.nb_lateral_points // 2, 0), # Initial node in the graph
             )
         else : 
             self.start = State( # Same initialisation than above
@@ -218,18 +227,17 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                             "lat": self.lat1,
                             "lon": self.lon1,
                             "mass": self.ac["limits"]["MTOW"] - 0.8*(self.ac["limits"]["MFC"]-fuel_loaded), # Here we compute the weight difference between the fuel loaded and the fuel capacity
-                            "mach": self.ac["cruise"]["mach"],
+                            "mach": mach,
                             "fuel": 0.0,
                             "alt": self.alt1,
                         }
                     ]
                 ),
-                (0, self.nb_lateral_points // 2),
+                (0, self.nb_lateral_points // 2, 0),
             )
         print(f"Start : {self.start}")
         # Definition of the fuel consumption function 
         self.fuel_flow = FuelFlow(actype).enroute
-        self.phase = 'Climb'
     
     # Class functions 
         
@@ -243,29 +251,34 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         trajectory = memory.trajectory.copy()
 
         # Set intermediate destination point
-        next_x, next_y = memory.pos
+        next_x, next_y, next_z = memory.pos
 
         next_x += 1
 
-        if action == Action.up:
+        if action[0] == H_Action.up:
             next_y += 1
-        if action == Action.down:
+        if action[0] == H_Action.down:
             next_y -= 1
+        if action[1] == V_Action.climb:
+            next_z += 1
+        if action[1] == V_Action.descent:
+            next_z -= 1
 
         # Aircraft stays on the network
-        if next_x >= self.nb_forward_points or next_y < 0 or next_y >= self.nb_lateral_points:
+        if next_x >= self.nb_forward_points or next_y < 0 or next_y >= self.nb_lateral_points or next_z < 0 or next_z >= self.nb_vertical_points:
             return memory
 
         # Concatenate the two trajectories
 
-        to_lat = self.network[next_x][next_y].lat
-        to_lon = self.network[next_x][next_y].lon
+        to_lat = self.network[next_x][next_y][next_z].lat
+        to_lon = self.network[next_x][next_y][next_z].lon
+        to_alt = self.network[next_x][next_y][next_z].height
         trajectory = self.flying(
-            trajectory.tail(1), (to_lat, to_lon))
+            trajectory.tail(1), (to_lat, to_lon, to_alt))
 
         state = State(
             pd.concat([memory.trajectory, trajectory], ignore_index=True),
-            (next_x, next_y),
+            (next_x, next_y, next_z),
         )
         return state
 
@@ -340,15 +353,28 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         """
         Get the applicable actions from a state.
         """
-        x, y = memory.pos
+        x, y, z = memory.pos
 
         space = []
         if x < self.nb_forward_points - 1:
-            space.append(Action.straight)
+            space.append((H_Action.straight,V_Action.cruise))
+            if z < self.nb_vertical_points - 1 :
+                space.append((H_Action.straight,V_Action.climb))
+            if z > 0 :
+                space.append((H_Action.straight,V_Action.descent))
             if y + 1 < self.nb_lateral_points:
-                space.append(Action.up)
+                space.append((H_Action.up,V_Action.cruise))
+                if z < self.nb_vertical_points - 1 :
+                    space.append((H_Action.up,V_Action.climb))
+                if z > 0 :
+                    space.append((H_Action.up,V_Action.descent))
             if y > 0:
-                space.append(Action.down)
+                space.append((H_Action.down,V_Action.cruise))
+                if z < self.nb_vertical_points - 1 :
+                    space.append((H_Action.down,V_Action.climb))
+                if z > 0 :
+                    space.append((H_Action.down,V_Action.descent))
+            
 
         return ListSpace(space)
 
@@ -356,13 +382,13 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         """
         Define action space.
         """
-        return EnumSpace(Action)
+        return EnumSpace((H_Action,V_Action))
 
     def _get_observation_space_(self) -> Space[D.T_observation]:
         """
         Define observation space.
         """
-        return MultiDiscreteSpace([self.nb_forward_points, self.nb_lateral_points])
+        return MultiDiscreteSpace([self.nb_forward_points, self.nb_lateral_points, self.nb_vertical_points])
 
     def _render_from(self, memory: State, **kwargs: Any) -> Any:
         """
@@ -391,7 +417,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         if objective == "distance" : 
             cost = distance_to_goal
 
-        if objective == "fuel" : #ajouter bearing
+        if objective == "fuel" : 
     
             tas = mach2tas(s.trajectory.iloc[-1]["mach"], s.trajectory.iloc[-1]["alt"])
             cost = (distance_to_goal/(tas*kts)) * self.fuel_flow(s.trajectory.iloc[-1]["mass"],
@@ -407,67 +433,84 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         
         half_forward_points = nb_forward_points // 2
         half_lateral_points = nb_lateral_points // 2
-        half_vertical_points = nb_vertical_points // 2
+        possible_altitudes =[((self.ac['cruise']['height']+2000*i) - (self.ac['cruise']['height']%1000)) for i in range(nb_vertical_points)]
 
         distp = 10 * p0.distanceTo(p1) / nb_forward_points / nb_lateral_points  # meters
-
-        pt = [[None for j in range(nb_lateral_points)] for i in range(nb_forward_points)]
+        
+        descent_dist = 300_000 #meters
+        climb_dist = 220_000 #meters
+        # Initialisation of the graph matrix 
+        # We take 2 more forward_points for the end of climbing and the beginning of the descent
+        pt = [[[None for k in range(nb_vertical_points)] for j in range(nb_lateral_points)] for i in range(nb_forward_points)] 
 
         # set boundaries
         for j in range(nb_lateral_points):
-            pt[0][j] = p0
-            pt[nb_forward_points - 1][j] = p1
+            for k in range (nb_vertical_points):
+                pt[0][j][k] = p0
+                pt[nb_forward_points - 1][j][k] = p1
 
-        # direct path between p0 and p1
-        for i in range(1, nb_forward_points - 1):
-            bearing = pt[i - 1][half_lateral_points].initialBearingTo(p1)
-            total_distance = pt[i - 1][half_lateral_points].distanceTo(pt[nb_forward_points - 1][half_lateral_points])
-            pt[i][half_lateral_points] = pt[i - 1][half_lateral_points].destination(total_distance / (nb_forward_points - i), bearing)
+                # set first step, climbing
+                bearing = pt[0][j][k].initialBearingTo(p1)
+                pt[1][j][k] = pt[0][j][k].destination(climb_dist, bearing,height=possible_altitudes[0])
+                
+                # set last step, descent    Trying backward
+                bearing = pt[nb_forward_points - 1][j][k].initialBearingTo(p0)
+                pt[nb_forward_points - 2][j][k] = pt[nb_forward_points - 1][j][k].destination(descent_dist, bearing,height=possible_altitudes[0])
+        
+        descent_point = pt[nb_forward_points - 2][0][0]
+        
+        # direct path between end of climbing and beginning of descent 
+        for k in range(len(possible_altitudes)):
+            for i in range(2, nb_forward_points - 2):
+                    bearing = pt[i - 1][half_lateral_points][k].initialBearingTo(descent_point)
+                    total_distance = pt[i - 1][half_lateral_points][k].distanceTo(pt[nb_forward_points - 2][half_lateral_points][k])
+                    pt[i][half_lateral_points][k] = pt[i - 1][half_lateral_points][k].destination(total_distance / (nb_forward_points - i), bearing, height=possible_altitudes[k])
 
-        bearing = pt[half_forward_points - 1][half_lateral_points].initialBearingTo(pt[half_forward_points + 1][half_lateral_points])
-        pt[half_forward_points][nb_lateral_points - 1] = pt[half_forward_points][half_lateral_points].destination(distp * half_lateral_points, bearing + 90)
-        pt[half_forward_points][0] = pt[half_forward_points][half_lateral_points].destination(distp * half_lateral_points, bearing - 90)
+            bearing = pt[half_forward_points - 1][half_lateral_points][k].initialBearingTo(pt[half_forward_points + 1][half_lateral_points][k])
+            pt[half_forward_points][nb_lateral_points - 1][k] = pt[half_forward_points][half_lateral_points][k].destination(distp * half_lateral_points, bearing + 90,  height=possible_altitudes[k])
+            pt[half_forward_points][0][k] = pt[half_forward_points][half_lateral_points][k].destination(distp * half_lateral_points, bearing - 90, height=possible_altitudes[k])
 
         for j in range(1, half_lateral_points + 1):
-            # +j (left)
-            bearing = pt[half_forward_points][half_lateral_points + j - 1].initialBearingTo(pt[half_forward_points][nb_lateral_points - 1])
-            total_distance = pt[half_forward_points][half_lateral_points + j - 1].distanceTo(pt[half_forward_points][nb_lateral_points - 1])
-            pt[half_forward_points][half_lateral_points + j] = pt[half_forward_points][half_lateral_points + j - 1].destination(
-                total_distance / (half_lateral_points - j + 1), bearing
-            )
-            # -j (right)
-            bearing = pt[half_forward_points][half_lateral_points - j + 1].initialBearingTo(pt[half_forward_points][0])
-            total_distance = pt[half_forward_points][half_lateral_points - j + 1].distanceTo(pt[half_forward_points][0])
-            pt[half_forward_points][half_lateral_points - j] = pt[half_forward_points][half_lateral_points - j + 1].destination(
-                total_distance / (half_lateral_points - j + 1), bearing
-            )
-            for i in range(1, half_forward_points):
-                # first halp (p0 to np2)
-                bearing = pt[i - 1][half_lateral_points + j].initialBearingTo(pt[half_forward_points][half_lateral_points + j])
-                total_distance = pt[i - 1][half_lateral_points + j].distanceTo(pt[half_forward_points][half_lateral_points + j])
-                pt[i][half_lateral_points + j] = pt[i - 1][half_lateral_points + j].destination(
-                    total_distance / (half_forward_points - i + 1), bearing
-                )
-                bearing = pt[i - 1][half_lateral_points - j].initialBearingTo(pt[half_forward_points][half_lateral_points - j])
-                total_distance = pt[i - 1][half_lateral_points - j].distanceTo(pt[half_forward_points][half_lateral_points - j])
-                pt[i][half_lateral_points - j] = pt[i - 1][half_lateral_points - j].destination(
-                    total_distance / (half_forward_points - i + 1), bearing
-                )
-                # second half (np2 to p1)
-                bearing = pt[half_forward_points + i - 1][half_lateral_points + j].initialBearingTo(pt[nb_forward_points - 1][half_lateral_points + j])
-                total_distance = pt[half_forward_points + i - 1][half_lateral_points + j].distanceTo(
-                    pt[nb_forward_points - 1][half_lateral_points + j]
-                )
-                pt[half_forward_points + i][half_lateral_points + j] = pt[half_forward_points + i - 1][half_lateral_points + j].destination(
-                    total_distance / (half_forward_points - i + 1), bearing
-                )
-                bearing = pt[half_forward_points + i - 1][half_lateral_points - j].initialBearingTo(pt[nb_forward_points - 1][half_lateral_points - j])
-                total_distance = pt[half_forward_points + i - 1][half_lateral_points - j].distanceTo(
-                    pt[nb_forward_points - 1][half_lateral_points - j]
-                )
-                pt[half_forward_points + i][half_lateral_points - j] = pt[half_forward_points + i - 1][half_lateral_points - j].destination(
-                    total_distance / (half_forward_points - i + 1), bearing
-                )
+            for k in range(len(possible_altitudes)):
+                # +j (left)
+                bearing = pt[half_forward_points][half_lateral_points + j - 1][k].initialBearingTo(pt[half_forward_points][nb_lateral_points - 1][k])
+                total_distance = pt[half_forward_points][half_lateral_points + j - 1][k].distanceTo(pt[half_forward_points][nb_lateral_points - 1][k])
+                pt[half_forward_points][half_lateral_points + j][k] = pt[half_forward_points][half_lateral_points + j - 1][k].destination(total_distance / (half_lateral_points - j + 1), 
+                                                                                                                                          bearing, 
+                                                                                                                                          height=possible_altitudes[k])
+                # -j (right)
+                bearing = pt[half_forward_points][half_lateral_points - j + 1][k].initialBearingTo(pt[half_forward_points][0][k])
+                total_distance = pt[half_forward_points][half_lateral_points - j + 1][k].distanceTo(pt[half_forward_points][0][k])
+                pt[half_forward_points][half_lateral_points - j][k] = pt[half_forward_points][half_lateral_points - j + 1][k].destination(total_distance / (half_lateral_points - j + 1), 
+                                                                                                                                          bearing, 
+                                                                                                                                          height=possible_altitudes[k])
+                for i in range(1, half_forward_points):
+                    # first halp (p0 to np2)
+                    bearing = pt[i - 1][half_lateral_points + j][k].initialBearingTo(pt[half_forward_points][half_lateral_points + j][k])
+                    total_distance = pt[i - 1][half_lateral_points + j][k].distanceTo(pt[half_forward_points][half_lateral_points + j][k])
+                    pt[i][half_lateral_points + j][k] = pt[i - 1][half_lateral_points + j][k].destination(total_distance / (half_forward_points - i + 1), 
+                                                                                                        bearing, 
+                                                                                                        height=possible_altitudes[k])
+                    
+                    bearing = pt[i - 1][half_lateral_points - j][k].initialBearingTo(pt[half_forward_points][half_lateral_points - j][k])
+                    total_distance = pt[i - 1][half_lateral_points - j][k].distanceTo(pt[half_forward_points][half_lateral_points - j][k])
+                    pt[i][half_lateral_points - j][k] = pt[i - 1][half_lateral_points - j][k].destination(total_distance / (half_forward_points - i + 1), 
+                                                                                                        bearing, 
+                                                                                                        height=possible_altitudes[k])
+                    
+                    # second half (np2 to p1)
+                    bearing = pt[half_forward_points + i - 1][half_lateral_points + j][k].initialBearingTo(pt[nb_forward_points - 1][half_lateral_points + j][k])
+                    total_distance = pt[half_forward_points + i - 1][half_lateral_points + j][k].distanceTo(pt[nb_forward_points - 1][half_lateral_points + j][k])
+                    pt[half_forward_points + i][half_lateral_points + j][k] = pt[half_forward_points + i - 1][half_lateral_points + j][k].destination(total_distance / (half_forward_points - i + 1), 
+                                                                                                                                                    bearing, 
+                                                                                                                                                    height=possible_altitudes[k])
+                    
+                    bearing = pt[half_forward_points + i - 1][half_lateral_points - j][k].initialBearingTo(pt[nb_forward_points - 1][half_lateral_points - j][k])
+                    total_distance = pt[half_forward_points + i - 1][half_lateral_points - j][k].distanceTo(pt[nb_forward_points - 1][half_lateral_points - j][k])
+                    pt[half_forward_points + i][half_lateral_points - j][k] = pt[half_forward_points + i - 1][half_lateral_points - j][k].destination(total_distance / (half_forward_points - i + 1), 
+                                                                                                                                                    bearing, 
+                                                                                                                                                    height=possible_altitudes[k])
+                
         return pt
 
     def simple_fuel_loop(self, domain_factory,max_steps:int=100):
@@ -506,6 +549,42 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         print(f'fuel : {fuel}, fuel loaded : {self.constraints["fuel"]}')
         return (fuel,enough_fuel)
     
+    def simple_mach_loop(self, domain_factory,max_steps:int=100):
+
+        solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=False)
+        self.solve_with(solver,domain_factory)
+        pause_between_steps = None
+        max_steps = 100
+        observation = self.reset()
+
+        solver.reset()
+        clear_output(wait=True)
+
+        # loop until max_steps or goal is reached
+        for i_step in range(1, max_steps + 1):
+            
+            if pause_between_steps is not None:
+                sleep(pause_between_steps)
+
+            # choose action according to solver
+            action = solver.sample_action(observation)
+            
+            # get corresponding action
+            outcome = self.step(action)
+            observation = outcome.observation
+            
+            if self.is_terminal(observation):
+                break   
+
+        # Retrieve fuel minimum fuel for the flight
+        time = self._get_terminal_state_time_fuel(observation)['time']
+        # Evaluate if there is a fuel constraint violation
+        to_fast = (time <= self.constraints["time"][0])
+        to_slow = (time >= self.constraints["time"][1])
+        solver._cleanup()
+        print(f'Time : {time}, Time constraints : {self.constraints["time"]}, mach: {self.mach}')
+        return (to_fast,to_slow)
+    
     def solve(self, domain_factory, max_steps:int=100, debug:bool=False, make_img:bool = False):
         solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
         self.solve_with(solver,domain_factory)
@@ -530,8 +609,9 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             observation = outcome.observation
             
             print('step ', i_step)
-            print("policy = ", action)
+            print("policy = ", action[0], action[1])
             print("New state = ", observation.pos)
+            print("Alt = ", observation.alt)
             if make_img : 
                 # update image
                 plt.clf()  # clear figure
@@ -540,10 +620,14 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 #plt.savefig(f'step_{i_step}')
 
             # final state reached?
-            if self.is_terminal(observation):
+            if self.is_terminal(observation): 
                 break
         if make_img  :
             plt.savefig("terminal")
+            plt.clf()
+            clear_output(wait=True)
+            figure=plot_altitude(observation.trajectory)
+            plt.savefig("altitude")
         # goal reached?
         is_goal_reached = self.is_goal(observation)
         terminal_state_constraints = self._get_terminal_state_time_fuel(observation)
@@ -566,7 +650,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             print(f"Goal not reached after {i_step} steps!")
         solver._cleanup()       
     
-    def flying(self, from_: pd.DataFrame, to_: Tuple[float, float]) -> pd.DataFrame:
+    def flying(self, from_: pd.DataFrame, to_: Tuple[float, float, int], dest_: Tuple[float, float, int] = None) -> pd.DataFrame:
         """Compute the trajectory of a flying object from a given point to a given point
 
         Args:
@@ -577,7 +661,9 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             pd.DataFrame: the final trajectory of the object
         """
         pos = from_.to_dict("records")[0]
-        dist_ = distance(pos["lat"], pos["lon"], to_[0], to_[1], pos["alt"])
+        
+        alt = to_[2]
+        dist_ = distance(pos["lat"], pos["lon"], to_[0], to_[1], alt)
         data = []
         epsilon = 100
         dt = 600
@@ -585,7 +671,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         loop = 0
         while dist > epsilon:  
             bearing = aero_bearing(pos["lat"], pos["lon"], to_[0], to_[1])
-            p, _, _ = atmos(pos["alt"] * ft)
+            p, _, _ = atmos(alt*ft)
             isobaric = p / 100
             we, wn = 0, 0
             if self.wind_ds:
@@ -593,7 +679,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 wind_ms = self.wind_ds.interpol_wind_classic(
                     lat=pos["lat"],
                     longi=pos["lon"],
-                    alt=pos["alt"],
+                    alt=alt,
                     t=time
                 )
                 we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
@@ -601,7 +687,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             wdir = (degrees(atan2(we, wn)) + 180) % 360
             wspd = sqrt(wn * wn + we * we)
             
-            tas = mach2tas(pos["mach"], pos["alt"])  # 400
+            tas = mach2tas(pos["mach"], alt*ft)  # 400
 
             wca = asin((wspd / tas) * sin(radians(bearing - wdir)))
 
@@ -618,11 +704,11 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 ll = to_[0], to_[1]
             else:
                 brg = degrees(atan2(gse, gsn)) % 360.0
-                ll = latlon(pos["lat"], pos["lon"], gs * dt, brg, pos["alt"])
+                ll = latlon(pos["lat"], pos["lon"], gs * dt, brg, alt*ft)
             pos["fuel"] = dt * self.fuel_flow(pos["mass"], 
                                     tas / kts, 
-                                    pos["alt"] * ft, 
-                                    path_angle=0.0)
+                                    alt * ft, 
+                                    path_angle=(alt-pos['alt'])/(gs*dt))
             mass = pos["mass"] - pos["fuel"]
 
             new_row = {
@@ -632,7 +718,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 "mass": mass,
                 "mach": pos["mach"],
                 "fuel": pos["fuel"],
-                "alt": pos["alt"], # to be modified
+                "alt": alt, # to be modified
             }
 
             # New distance to the next 'checkpoint'
@@ -655,7 +741,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         return pd.DataFrame(data)
 
 
-def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple], ac : str, constraints : dict, wind_interpolator : GenericWindInterpolator) -> float:
+def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple], ac : str, constraints : dict, wind_interpolator : GenericWindInterpolator, mach : float) -> float:
     """
     Function to optimise the fuel loaded in the plane, doing multiple fuel loops to approach an optimal
 
@@ -684,17 +770,20 @@ def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple
      
     fuel_remaining = True
     small_diff = False
-    step = 0
-    while fuel_remaining and step < 20 and not small_diff:
+    step = 0 
+
+    while (not small_diff)  :
         domain_factory = lambda: FlightPlanningDomain(origin, 
                                                 destination, 
                                                 ac, 
                                                 constraints=constraints,
                                                 wind_interpolator=wind_interpolator, 
-                                                objective="distance",
+                                                objective="time",
                                                 nb_forward_points=41,
                                                 nb_lateral_points=11,
-                                                fuel_loaded = constraints["fuel"]
+                                                nb_vertical_points=1,
+                                                fuel_loaded = constraints["fuel"],
+                                                mach = mach
                                                 )
         domain = domain_factory()
         
@@ -704,6 +793,78 @@ def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple
         small_diff = ((fuel_prec - constraints['fuel']) <= (1/1000))
     
     return constraints["fuel"]
+
+def mach_optimisation(origin : Union[str, tuple], destination : Union[str, tuple], ac : str, constraints : dict, wind_interpolator : GenericWindInterpolator) -> float:
+    """
+    Function to optimise the fuel loaded in the plane, doing multiple fuel loops to approach an optimal
+
+    Args:
+        origin (Union[str, tuple]): 
+            ICAO code of the departure airport of th flight plan e.g LFPG for Paris-CDG, or a tuple (lat,lon)
+        
+        destination (Union[str, tuple]): 
+            ICAO code of the arrival airport of th flight plan e.g LFBO for Toulouse-Blagnac airport, or a tuple (lat,lon)
+        
+        ac (str): 
+            Aircarft type describe in openap datas (https://github.com/junzis/openap/tree/master/openap/data/aircraft)
+        
+        constraints (dict): 
+            Constraints that will be defined for the flight plan 
+        
+        wind_interpolator (GenericWindInterpolator): 
+            Define the wind interpolator to use wind informations for the flight plan
+            
+        fuel_loaded (float):
+            Fuel loaded in the plane for the flight 
+    Returns:
+        float: 
+            Return mach average speed to complete the flight in the good time window
+    """
+     
+    fuel_remaining = True
+    small_diff = False
+    step = 0
+    mach = aircraft(ac)['cruise']['mach']
+    domain_factory = lambda: FlightPlanningDomain(origin, 
+                                                destination, 
+                                                ac, 
+                                                constraints=constraints,
+                                                wind_interpolator=wind_interpolator, 
+                                                objective="time",
+                                                nb_forward_points=41,
+                                                nb_lateral_points=11,
+                                                fuel_loaded = constraints["fuel"],
+                                                mach = mach
+                                                )
+    domain = domain_factory()
+    too_fast, too_slow = domain.simple_mach_loop(domain_factory)
+    step = 0
+    while ( (too_fast or too_slow) and mach <= aircraft(ac)['limits']['MMO'] and mach >= (aircraft(ac)['cruise']['mach']-0.05) or step > 10) :
+        step += 1
+        if too_fast :
+            mach -= 0.01
+        elif too_slow :
+            mach += 0.01
+            
+        domain_factory = lambda: FlightPlanningDomain(origin, 
+                                                destination, 
+                                                ac, 
+                                                constraints=constraints,
+                                                wind_interpolator=wind_interpolator, 
+                                                objective="time",
+                                                nb_forward_points=41,
+                                                nb_lateral_points=11,
+                                                fuel_loaded = constraints["fuel"],
+                                                mach = mach
+                                                )
+        domain = domain_factory()
+        
+        fuel_prec = constraints["fuel"]
+        too_fast, too_slow = domain.simple_mach_loop(domain_factory)
+        if not fuel_remaining :
+            constraints['fuel'] = aircraft(ac)['limits']['MFC']
+    
+    return mach
 
 
 if __name__ == "__main__":
@@ -760,7 +921,7 @@ if __name__ == "__main__":
         if args.timeConstraintEnd :
             timeConstraint = (float(args.timeConstraintStart),float(args.timeConstraintEnd))
         else : 
-            timeConstraint = (float(args.timeConstraintStart),0.0)
+            timeConstraint = (float(args.timeConstraintStart),None)
     else:
         if args.timeConstraintEnd :
             timeConstraint = (0.0,float(args.timeConstraintEnd))
@@ -808,16 +969,22 @@ if __name__ == "__main__":
     else : 
         wind_interpolator = None
     
+    # Doing a speed loop if necessary
+    
+    if constraints["time"] is not None :
+        mach = mach_optimisation(origin, destination, ac, constraints, wind_interpolator)
+    else :
+        mach = aircraft(ac)['cruise']['mach']
+    
     # Doing the fuel loop if requested
     
     if fuel_loop :
-        fuel_loaded = fuel_optimisation(origin, destination, ac, constraints, wind_interpolator)
+        fuel_loaded = fuel_optimisation(origin, destination, ac, constraints, wind_interpolator,mach)
         # Adding fuel reserve (we can't put more fuel than maxFuel)
-        fuel_loaded = min(1.1 * fuel_loaded,maxFuel)
+        fuel_loaded = min(1.1 * fuel_loaded, maxFuel)
     else :
         fuel_loaded = maxFuel
         
-    
     constraints["fuel"] = 0.97* fuel_loaded # Update of the maximum fuel there is to be used
     print(f'\n*********************\nFuel loaded : {fuel_loaded}, maximum fuel : {constraints["fuel"]}\n*********************\n')
     
@@ -830,11 +997,12 @@ if __name__ == "__main__":
                                                   objective=objective,
                                                   nb_forward_points=41,
                                                   nb_lateral_points=11,
-                                                  fuel_loaded=fuel_loaded
+                                                  fuel_loaded=fuel_loaded,
+                                                  mach = mach
                                                  )
     domain = domain_factory()
     plot_network(domain)
     solvers = match_solvers(domain=domain)
 
-    domain.solve(domain_factory,make_img=make_img)  
+    domain.solve(domain_factory,make_img=make_img,debug=debug)  
     

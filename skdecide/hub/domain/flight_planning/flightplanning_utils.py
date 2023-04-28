@@ -61,13 +61,13 @@ def plot_trajectory(
     Returns:
         Figure: the figure
     """
-
+ 
     fig = Figure(figsize=(600, 600))
     fig.canvas.header_visible = False
     fig.canvas.footer_visible = False
     fig.canvas.resizable = False
     fig.set_dpi(1)
-
+    
     # lon1, lat1 = trajectory.iloc[0]["lon"], trajectory.iloc[0]["lat"]
     # lon2, lat2 = trajectory.iloc[-1]["lon"], trajectory.iloc[-1]["lat"]
 
@@ -143,6 +143,12 @@ def plot_trajectory(
 
     return fig
 
+def plot_altitude(trajectory: pd.DataFrame) -> Figure :
+    fig = plt.Figure()
+    ax = plt.axes()
+    ax.plot(np.arange(len(trajectory.alt)),trajectory.alt)
+    return fig
+
 def plot_network(domain):
     network = domain.network
     origin_coord = domain.lat1, domain.lon1, domain.alt1
@@ -156,10 +162,10 @@ def plot_network(domain):
     ax.gridlines(draw_labels=True, color="gray", alpha=0.5, ls="--")
     ax.coastlines(resolution="50m", lw=0.5, color="gray")
     #ax.plot(longs, lats, marker="o", transform=ccrs.Geodetic())
-    ax.scatter([network[x][x1].lon for x in range(len(network)) 
-                for x1 in range(len(network[x]))], 
-                [network[x][x1].lat for x in range(len(network)) 
-                for x1 in range(len(network[x]))], transform=ccrs.Geodetic(), s=0.2)
+    ax.scatter([network[x][x1][x2].lon for x in range(len(network)) for x1 in range(len(network[x])) for x2 in range(len(network[x][x1]))], 
+               [network[x][x1][x2].lat for x in range(len(network)) for x1 in range(len(network[x])) for x2 in range(len(network[x][x1]))], 
+               transform=ccrs.Geodetic(), 
+               s=0.2)
     
     #ax.stock_img()
     fig.savefig("network points.png")
