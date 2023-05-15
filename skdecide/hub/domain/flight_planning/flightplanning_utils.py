@@ -28,7 +28,7 @@ from cartopy.feature import BORDERS, LAND, OCEAN
 from matplotlib.figure import Figure
 from openap import aero, nav
 from weather_interpolator.weather_tools import get_weather_noaa
-
+from pygeodesy.ellipsoidalVincenty import LatLon
 # from openap.extra.aero import ft, h_isa
 # from openap.top import wind
 from scipy.interpolate import RegularGridInterpolator
@@ -146,7 +146,12 @@ def plot_trajectory(
 def plot_altitude(trajectory: pd.DataFrame) -> Figure :
     fig = plt.Figure()
     ax = plt.axes()
-    ax.plot(np.arange(len(trajectory.alt)),trajectory.alt)
+    pos = [LatLon(trajectory.iloc[i]["lat"], 
+                   trajectory.iloc[i]["lon"],
+                   trajectory.iloc[i]["alt"]) for i in range (len(trajectory.alt))]
+    dist = [d.distanceTo(pos[0]) for d in pos]
+    ax.plot(dist,trajectory.alt)
+    #ax.plot(np.arange(len(trajectory.alt)),trajectory.alt)
     return fig
 
 def plot_network(domain):
