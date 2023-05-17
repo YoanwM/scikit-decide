@@ -128,7 +128,10 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         nb_vertical_points: int=None,
         fuel_loaded: float = None,
         fuel_loop: bool = False,
-        mach: float = None
+        mach: float = None,
+        climbing_slope: float = None,
+        descending_slope: float = None,
+        graph_width: str = None
     ):
         """
         Initialisation of a instance of flight planning that will be computed
@@ -155,7 +158,13 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             fuel_loaded (float, optional): 
                 Fuel loaded in the aricraft for the flight plan. Defaults to None.
             mach (float, optional):
-                Speed of the aircraft calculated for the flight. Defaults to None
+                Speed of the aircraft calculated for the flight. Defaults to None.
+            climbing_slope (float, optionnal):
+                Climbing slope of the aircraft, has to be between 10.0 and 25.0. Defaults to None.
+            descending_slope (float, optionnal):
+                Descending slope of the aircraft, has to be between 10.0 and 25.0. Defaults to None.
+            graph_width (str, optionnal):
+                Airways graph width, in ["tiny", "small", "normal", "large", "xlarge"]. Defaults to None
         """
         
         # Initialisation of the origin and the destination    
@@ -186,7 +195,12 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         if wind_interpolator:
             self.wind_ds = wind_interpolator
 
-        # Build network between top of climb and destination airport
+        # Build network between airports
+        if graph_width : 
+            all_graph_width = {"tiny" : 0.5, "small": 0.75, "normal": 1.0, "large": 1.5, "xlarge": 2.0}
+            graph_width = all_graph_width[graph_width]
+        else : 
+            graph_width = 1.0
         self.nb_forward_points = nb_forward_points
         self.nb_lateral_points = nb_lateral_points
         if nb_vertical_points :
@@ -198,23 +212,25 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             LatLon(self.lat2, self.lon2, self.alt2),
             self.nb_forward_points,
             self.nb_lateral_points,
-            self.nb_vertical_points
+            self.nb_vertical_points,
+            descending_slope=descending_slope,
+            climbing_slope=climbing_slope,
+            graph_width=graph_width
         )
-        
+        self.fuel_loaded = fuel_loaded
         # Initialisation of the flight plan, with the iniatial state
         if fuel_loaded :
             constraints["fuel"] = 0.97* fuel_loaded
             
         if fuel_loop :
             fuel_loaded = fuel_optimisation(origin, destination, ac, constraints, wind_interpolator,mach)
-            # Adding fuel reserve (we can't put more fuel than maxFuel)
+            # Adding fuel reserve (but we can't put more fuel than maxFuel)
             fuel_loaded = min(1.1 * fuel_loaded, maxFuel)
         elif fuel_loaded :
             constraints["fuel"] = 0.97* fuel_loaded # Update of the maximum fuel there is to be used
         else :
             fuel_loaded = maxFuel
-            
-        
+        self.fuel_loaded = fuel_loaded    
         
         assert(fuel_loaded <= self.ac["limits"]['MFC']) # Ensure fuel loaded <= fuel capacity
         if not fuel_loaded :
@@ -445,21 +461,39 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
         return Value(cost=cost)
 
-    def get_network(self, p0: LatLon, p1: LatLon, nb_forward_points: int, nb_lateral_points: int, nb_vertical_points: int):
-        
+    def get_network(self, p0: LatLon, p1: LatLon, nb_forward_points: int, nb_lateral_points: int, 
+                    nb_vertical_points: int, climbing_slope: float=None, descending_slope: float=None,
+                    graph_width:float=None):
+        cruise_alt_min = 31_000 #maybe useful to change this
         half_forward_points = nb_forward_points // 2
         half_lateral_points = nb_lateral_points // 2
-        possible_altitudes =[((self.ac['cruise']['height']+2000*i) - (self.ac['cruise']['height']%1000)) for i in range(nb_vertical_points)]
+        half_vertical_points = nb_vertical_points // 2
+        
 
-        distp = 10 * p0.distanceTo(p1) / nb_forward_points / nb_lateral_points  # meters
+        distp = graph_width * 10 * p0.distanceTo(p1) / nb_forward_points / nb_lateral_points  # meters, around 2.2% of the p0 to p1 distance
         
         descent_dist = 300_000 #meters
         climb_dist = 220_000 #meters
-        climbing_ratio = possible_altitudes[0]/climb_dist
-        descending_ratio = possible_altitudes[0]/descent_dist
+        
+        total_distance = p0.distanceTo(p1)
+        if total_distance < (climb_dist+descent_dist) :
+            climb_dist = total_distance * ((climb_dist / (climb_dist+descent_dist))-0.1)
+            descent_dist = total_distance * (descent_dist / (climb_dist+descent_dist) -0.1)
+            possible_altitudes = [cruise_alt_min for k in range(nb_vertical_points)]
+            
+        else :
+            possible_altitudes = [((min(self.ac['cruise']['height']+2000*i) - (self.ac['cruise']['height']%1000),self.ac["limits"]["ceiling"])) for i in range(nb_vertical_points)]
+        
+        if  climbing_slope:
+               climbing_ratio = climbing_slope
+        else :
+            climbing_ratio = possible_altitudes[0]/climb_dist
+        if descending_slope :
+            descending_ratio = descending_slope
+        else :
+            descending_ratio = possible_altitudes[0]/descent_dist
         # Initialisation of the graph matrix 
-        # We take 2 more forward_points for the end of climbing and the beginning of the descent
-        pt = [[[None for k in range(nb_vertical_points)] for j in range(nb_lateral_points)] for i in range(nb_forward_points)] 
+        pt = [[[None for k in range(len(possible_altitudes))] for j in range(nb_lateral_points)] for i in range(nb_forward_points)] 
 
         # set boundaries
         for j in range(nb_lateral_points):
@@ -472,47 +506,39 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         i_initial=1 
         dist=0
         alt = p0.height
-        print(f"Ratio {climbing_ratio}")
         while dist < climb_dist :
-            local_dist = (pt[i_initial-1][0][0].distanceTo(p1)) / (nb_forward_points - i_initial)
+            
+            local_dist = (pt[i_initial-1][half_lateral_points][half_vertical_points].distanceTo(p1)) / (nb_forward_points - i_initial)
             dist += local_dist
             alt +=  int(local_dist*climbing_ratio)
-            print(f"Altitude : {alt} au pt {i_initial}, dist = {dist}")
-            for j in range(nb_lateral_points):
-                for k in range (nb_vertical_points):
-                    bearing = pt[i_initial-1][j][k].initialBearingTo(p1)
-                    pt[i_initial][j][k] = pt[i_initial-1][j][k].destination(local_dist, bearing, min(possible_altitudes[0], alt))
+
+            for k in range (nb_vertical_points):
+                bearing = pt[i_initial-1][half_lateral_points][k].initialBearingTo(p1)
+                pt[i_initial][half_lateral_points][k] = pt[i_initial-1][half_lateral_points][k].destination(local_dist,
+                                                                                                            bearing,
+                                                                                                            min(possible_altitudes[0], alt))
             i_initial+=1
                     
-        # set last step, descent    Trying backward
-        """for j in range(nb_lateral_points):
-                for k in range (nb_vertical_points):
-                    bearing = pt[nb_forward_points - 1][j][k].initialBearingTo(p0)
-                    pt[nb_forward_points - 2][j][k] = pt[nb_forward_points - 1][j][k].destination(descent_dist, bearing,height=possible_altitudes[0])
-        
-        descent_point = pt[nb_forward_points - 2][0][0] """
-        
-        
+        # set last step, descent    
         i_final=1 
         dist=0
         alt = p1.height
-        print(f"Ratio {descending_ratio}")
+
         while dist < descent_dist :
-            local_dist = (pt[nb_forward_points - i_final][0][0].distanceTo(p0)) / (nb_forward_points - i_final)
+            local_dist = (pt[nb_forward_points - i_final][half_lateral_points][half_vertical_points].distanceTo(p0)) / (nb_forward_points - i_final)
             dist += local_dist
             alt +=  int(local_dist*descending_ratio)
-            print(f"Altitude : {alt} au pt {i_final}, dist = {dist}")
-            for j in range(nb_lateral_points):
-                for k in range (nb_vertical_points):
-                    bearing = pt[nb_forward_points - i_final][j][k].initialBearingTo(p0)
-                    pt[nb_forward_points - i_final-1][j][k] = pt[nb_forward_points - i_final][j][k].destination(local_dist, bearing, min(possible_altitudes[0], alt))
+
+            for k in range (nb_vertical_points):
+                bearing = pt[nb_forward_points - i_final][half_lateral_points][k].initialBearingTo(p0)
+                pt[nb_forward_points - i_final-1][half_lateral_points][k] = pt[nb_forward_points - i_final][half_lateral_points][k].destination(local_dist, bearing, min(possible_altitudes[0], alt))
             i_final+=1        
             
             
         # direct path between end of climbing and beginning of descent 
-        for k in range(len(possible_altitudes)):
-            for i in range(i_initial, i_final):
-                    bearing = pt[i - 1][half_lateral_points][k].initialBearingTo(pt[i_final][0][0])
+        for k in range(nb_vertical_points):
+            for i in range(i_initial, nb_forward_points-i_final+1):
+                    bearing = pt[i - 1][half_lateral_points][k].initialBearingTo(p1)
                     total_distance = pt[i - 1][half_lateral_points][k].distanceTo(pt[nb_forward_points - 2][half_lateral_points][k])
                     pt[i][half_lateral_points][k] = pt[i - 1][half_lateral_points][k].destination(total_distance / (nb_forward_points - i), bearing, height=possible_altitudes[k])
 
@@ -534,6 +560,19 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 pt[half_forward_points][half_lateral_points - j][k] = pt[half_forward_points][half_lateral_points - j + 1][k].destination(total_distance / (half_lateral_points - j + 1), 
                                                                                                                                           bearing, 
                                                                                                                                           height=possible_altitudes[k])
+                for i in range(1,i_initial):
+                    alt = pt[i][half_lateral_points][k].height
+                    bearing = pt[i - 1][half_lateral_points + j][k].initialBearingTo(pt[half_forward_points][half_lateral_points + j][k])
+                    total_distance = pt[i - 1][half_lateral_points + j][k].distanceTo(pt[half_forward_points][half_lateral_points + j][k])
+                    pt[i][half_lateral_points + j][k] = pt[i - 1][half_lateral_points + j][k].destination(total_distance / (half_forward_points - i + 1), 
+                                                                                                        bearing, 
+                                                                                                        height=alt)
+                   
+                    bearing = pt[i - 1][half_lateral_points - j][k].initialBearingTo(pt[half_forward_points][half_lateral_points - j][k])
+                    total_distance = pt[i - 1][half_lateral_points - j][k].distanceTo(pt[half_forward_points][half_lateral_points - j][k])
+                    pt[i][half_lateral_points - j][k] = pt[i - 1][half_lateral_points - j][k].destination(total_distance / (half_forward_points - i + 1), 
+                                                                                                        bearing, 
+                                                                                                        height=alt)
                 for i in range(i_initial, half_forward_points):
                     # first halp (p0 to np2)
                     bearing = pt[i - 1][half_lateral_points + j][k].initialBearingTo(pt[half_forward_points][half_lateral_points + j][k])
@@ -547,7 +586,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                     pt[i][half_lateral_points - j][k] = pt[i - 1][half_lateral_points - j][k].destination(total_distance / (half_forward_points - i + 1), 
                                                                                                         bearing, 
                                                                                                         height=possible_altitudes[k])
-                for i in range(i_final, half_forward_points):     
+                for i in range(1,half_forward_points-i_final):     
                     # second half (np2 to p1)
                     bearing = pt[half_forward_points + i - 1][half_lateral_points + j][k].initialBearingTo(pt[nb_forward_points - 1][half_lateral_points + j][k])
                     total_distance = pt[half_forward_points + i - 1][half_lateral_points + j][k].distanceTo(pt[nb_forward_points - 1][half_lateral_points + j][k])
@@ -560,7 +599,20 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                     pt[half_forward_points + i][half_lateral_points - j][k] = pt[half_forward_points + i - 1][half_lateral_points - j][k].destination(total_distance / (half_forward_points - i + 1), 
                                                                                                                                                     bearing, 
                                                                                                                                                     height=possible_altitudes[k])
-                
+                for i in range(half_forward_points-i_final,half_forward_points):
+                    alt = pt[half_forward_points + i - 1][half_lateral_points][k].height
+                    bearing = pt[half_forward_points + i - 1][half_lateral_points + j][k].initialBearingTo(pt[nb_forward_points - 1][half_lateral_points + j][k])
+                    total_distance = pt[half_forward_points + i - 1][half_lateral_points + j][k].distanceTo(pt[nb_forward_points - 1][half_lateral_points + j][k])
+                    pt[half_forward_points + i][half_lateral_points + j][k] = pt[half_forward_points + i - 1][half_lateral_points + j][k].destination(total_distance / (half_forward_points - i + 1), 
+                                                                                                                                                    bearing, 
+                                                                                                                                                    height=alt)
+                    
+                    bearing = pt[half_forward_points + i - 1][half_lateral_points - j][k].initialBearingTo(pt[nb_forward_points - 1][half_lateral_points - j][k])
+                    total_distance = pt[half_forward_points + i - 1][half_lateral_points - j][k].distanceTo(pt[nb_forward_points - 1][half_lateral_points - j][k])
+                    pt[half_forward_points + i][half_lateral_points - j][k] = pt[half_forward_points + i - 1][half_lateral_points - j][k].destination(total_distance / (half_forward_points - i + 1), 
+                                                                                                                                                    bearing, 
+                                                                                                                                                    height=alt)
+
         return pt
 
     def simple_fuel_loop(self, domain_factory,max_steps:int=100):
@@ -596,7 +648,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         enough_fuel = (fuel <= self.constraints["fuel"])
         
         solver._cleanup()
-        print(f'fuel : {fuel}, fuel loaded : {self.constraints["fuel"]}')
+        print(f'fuel : {fuel}, fuel loaded : {self.fuel_loaded}')
         return (fuel,enough_fuel)
     
     def simple_mach_loop(self, domain_factory,max_steps:int=100):
@@ -662,6 +714,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             print("policy = ", action[0], action[1])
             print("New state = ", observation.pos)
             print("Alt = ", observation.alt)
+            print("Coord = ", observation.trajectory.iloc[-1]["lat"], observation.trajectory.iloc[-1]["lon"], observation.alt)
             if make_img : 
                 # update image
                 plt.clf()  # clear figure
@@ -937,12 +990,30 @@ if __name__ == "__main__":
     parser.add_argument('-div', '--diversion', help='Boolean to put a diversion on the flight plan', action='store_true')
     parser.add_argument('-fl', '--fuelLoop', help='If this option is selected, there will be a first loop to optimise the fuel loaded in the plane',action='store_true')
     parser.add_argument('-img', '--images', help='Saving images from the flight plan e.g. Network points, terminal trajectory...', action='store_true')
-    
-    
+    parser.add_argument('-cl', '--climbSlope', help='Climb slope of the aircraft (percent), between 10.0 and 25.0', type=float)
+    parser.add_argument('-des', '--descentSlope', help='Descent slope of the aircraft (percent), between 10.0 and 25.0', type=float)
+    parser.add_argument('-gw','--graphWidth', help='Width of the airways graph, take one of these : tiny, small, normal, large, xlarge',type=str)
     
     args = parser.parse_args()
     
     # Retrieve arguments 
+    if args.graphWidth :
+        if ["tiny", "small", "normal", "large", "xlarge"].__contains__(args.graphWidth) :
+            graphWidth = args.graphWidth
+        else : 
+            graphWidth = None
+    else :
+        graphWidth = None
+
+    if args.climbSlope :
+        climb_slope = args.climbSlope
+    else :
+        climb_slope = None
+    if args.descentSlope :
+        descent_slope = args.descentSlope
+    else :
+        descent_slope = None
+        
     
     if args.destination :
         destination = args.destination
@@ -1036,7 +1107,10 @@ if __name__ == "__main__":
                                                   nb_forward_points=41,
                                                   nb_lateral_points=11,
                                                   fuel_loop=fuel_loop,
-                                                  mach = mach
+                                                  mach = mach,
+                                                  descending_slope=descent_slope,
+                                                  climbing_slope = climb_slope,
+                                                  graph_width = graphWidth
                                                  )
     domain = domain_factory()
     plot_network(domain)
