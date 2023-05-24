@@ -305,6 +305,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         to_lat = self.network[next_x][next_y][next_z].lat
         to_lon = self.network[next_x][next_y][next_z].lon
         to_alt = self.network[next_x][next_y][next_z].height
+        
+        self.mach = self.speed_management(trajectory.tail(1))
         trajectory = self.flying(
             trajectory.tail(1), (to_lat, to_lon, to_alt))
 
@@ -435,29 +437,83 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         )
 
     def heuristic(self, s: D.T_state, objective : str = None) -> Value[D.T_value]:
-        """Heuristic to be used by search algorithms.
-            Depending on the objective and constraints. 
+        """Heuristic to be used by search algorithms, depending on the objective and constraints. 
         """
         if objective is None :
             objective = self.objective
 
-        lat = s.trajectory.iloc[-1]["lat"]
-        lon = s.trajectory.iloc[-1]["lon"]
+        pos = s.trajectory.iloc[-1]
+        
         # Compute distance in meters
-        distance_to_goal = distance(lat, lon, self.lat2, self.lon2)
+        distance_to_goal = LatLon.distanceTo(LatLon(pos["lat"],pos["lon"],height=pos["alt"]), LatLon(self.lat2, self.lon2,height=self.alt2))
         
         if objective == "distance" : 
             cost = distance_to_goal
 
-        if objective == "fuel" : 
-    
-            tas = mach2tas(s.trajectory.iloc[-1]["mach"], s.trajectory.iloc[-1]["alt"])
-            cost = (distance_to_goal/(tas*kts)) * self.fuel_flow(s.trajectory.iloc[-1]["mass"],
-                                                                 tas * kts,
-                                                                 s.trajectory.iloc[-1]["alt"] * ft)
-                                             
+        if objective == "fuel" :
+             
+            we, wn = 0,0
+            bearing = aero_bearing(pos["lat"], pos["lon"], self.lat2, self.lon2)
+            
+            if self.wind_ds :
+                time = pos["ts"]
+                wind_ms = self.wind_ds.interpol_wind_classic(
+                    lat=pos["lat"],
+                    longi=pos["lon"],
+                    alt=pos["alt"],
+                    t=time
+                )
+                
+                we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
+
+            wdir = (degrees(atan2(we, wn)) + 180) % 360
+            wspd = sqrt(wn * wn + we * we)
+            
+            tas = mach2tas(pos["mach"], pos["alt"]*ft) 
+            
+            wca = asin((wspd / tas) * sin(radians(bearing - wdir)))
+
+            heading = (360 + bearing - degrees(wca)) % 360
+
+            gsn = tas * cos(radians(heading)) - wn
+            gse = tas * sin(radians(heading)) - we
+
+            gs = sqrt(gsn * gsn + gse * gse) # ground speed
+            
+            cost = (distance_to_goal/gs) * self.fuel_flow(pos["mass"],
+                                                                tas * kts,
+                                                                pos["alt"] * ft)
+                                                         
         if objective == "time" :
-            cost = distance_to_goal/s.trajectory.iloc[-1]["mach"]
+            we, wn = 0,0
+            bearing = aero_bearing(pos["lat"], pos["lon"], self.lat2, self.lon2)
+            
+            if self.wind_ds :
+                time = pos["ts"]
+                wind_ms = self.wind_ds.interpol_wind_classic(
+                    lat=pos["lat"],
+                    longi=pos["lon"],
+                    alt=pos["alt"],
+                    t=time
+                )
+                
+                we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
+
+            wdir = (degrees(atan2(we, wn)) + 180) % 360
+            wspd = sqrt(wn * wn + we * we)
+            
+            tas = mach2tas(pos["mach"], pos["alt"]*ft) 
+            
+            wca = asin((wspd / tas) * sin(radians(bearing - wdir)))
+
+            heading = (360 + bearing - degrees(wca)) % 360
+
+            gsn = tas * cos(radians(heading)) - wn
+            gse = tas * sin(radians(heading)) - we
+
+            gs = sqrt(gsn * gsn + gse * gse) # ground speed
+            
+            cost = (distance_to_goal/gs)
 
         return Value(cost=cost)
 
@@ -482,7 +538,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             possible_altitudes = [cruise_alt_min for k in range(nb_vertical_points)]
             
         else :
-            possible_altitudes = [((min(self.ac['cruise']['height']+2000*i) - (self.ac['cruise']['height']%1000),self.ac["limits"]["ceiling"])) for i in range(nb_vertical_points)]
+            possible_altitudes = [(min(self.ac['cruise']['height']+2000*i - (self.ac['cruise']['height']%1000), self.ac["limits"]["ceiling"])) for i in range(nb_vertical_points)]
         
         if  climbing_slope:
                climbing_ratio = climbing_slope
@@ -651,42 +707,6 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         print(f'fuel : {fuel}, fuel loaded : {self.fuel_loaded}')
         return (fuel,enough_fuel)
     
-    def simple_mach_loop(self, domain_factory,max_steps:int=100):
-
-        solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=False)
-        self.solve_with(solver,domain_factory)
-        pause_between_steps = None
-        max_steps = 100
-        observation = self.reset()
-
-        solver.reset()
-        clear_output(wait=True)
-
-        # loop until max_steps or goal is reached
-        for i_step in range(1, max_steps + 1):
-            
-            if pause_between_steps is not None:
-                sleep(pause_between_steps)
-
-            # choose action according to solver
-            action = solver.sample_action(observation)
-            
-            # get corresponding action
-            outcome = self.step(action)
-            observation = outcome.observation
-            
-            if self.is_terminal(observation):
-                break   
-
-        # Retrieve fuel minimum fuel for the flight
-        time = self._get_terminal_state_time_fuel(observation)['time']
-        # Evaluate if there is a fuel constraint violation
-        to_fast = (time <= self.constraints["time"][0])
-        to_slow = (time >= self.constraints["time"][1])
-        solver._cleanup()
-        print(f'Time : {time}, Time constraints : {self.constraints["time"]}, mach: {self.mach}')
-        return (to_fast,to_slow)
-    
     def solve(self, domain_factory, max_steps:int=100, debug:bool=False, make_img:bool = False):
         solver = Astar(heuristic=lambda d, s: d.heuristic(s), debug_logs=debug)
         self.solve_with(solver,domain_factory)
@@ -714,7 +734,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             print("policy = ", action[0], action[1])
             print("New state = ", observation.pos)
             print("Alt = ", observation.alt)
-            print("Coord = ", observation.trajectory.iloc[-1]["lat"], observation.trajectory.iloc[-1]["lon"], observation.alt)
+            print("Mach = ", observation.trajectory.iloc[-1]["mach"])
+            print(observation)
             if make_img : 
                 # update image
                 plt.clf()  # clear figure
@@ -753,7 +774,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             print(f"Goal not reached after {i_step} steps!")
         solver._cleanup()       
     
-    def flying(self, from_: pd.DataFrame, to_: Tuple[float, float, int], dest_: Tuple[float, float, int] = None) -> pd.DataFrame:
+    def flying(self, from_: pd.DataFrame, to_: Tuple[float, float, int]) -> pd.DataFrame:
         """Compute the trajectory of a flying object from a given point to a given point
 
         Args:
@@ -790,7 +811,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             wdir = (degrees(atan2(we, wn)) + 180) % 360
             wspd = sqrt(wn * wn + we * we)
             
-            tas = mach2tas(pos["mach"], alt*ft)  # 400
+            tas = mach2tas(self.mach, alt*ft)  # 400
 
             wca = asin((wspd / tas) * sin(radians(bearing - wdir)))
 
@@ -819,7 +840,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 "lat": ll[0],
                 "lon": ll[1],
                 "mass": mass,
-                "mach": pos["mach"],
+                "mach": self.mach,
                 "fuel": pos["fuel"],
                 "alt": alt, # to be modified
             }
@@ -843,6 +864,66 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
 
         return pd.DataFrame(data)
 
+    def speed_management(self, from_: pd.DataFrame) -> float :
+        
+        if self.constraints["time"] is None :
+            if self.objective == 'time':
+                return self.ac['limits']['MMO'] # If there is no time constraint & the objective is "time", we use maximum speed
+            else :
+                return self.ac['cruise']['mach'] # If the objecitve is not time, we use cruise speed
+            
+        pos = from_.to_dict("records")[0]
+        distance_to_goal = LatLon.distanceTo(LatLon(pos["lat"],pos["lon"],height=pos["alt"]), LatLon(self.lat2, self.lon2,height=self.alt2))
+        new_mach = pos["mach"]
+        
+        for i in range (10) :
+            we, wn= 0,0
+            bearing = aero_bearing(pos["lat"], pos["lon"], self.lat2, self.lon2)
+            
+            if self.wind_ds :
+                time = pos["ts"]
+                wind_ms = self.wind_ds.interpol_wind_classic(
+                    lat=pos["lat"],
+                    longi=pos["lon"],
+                    alt=pos["alt"],
+                    t=time
+                )
+                
+                we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
+
+            wdir = (degrees(atan2(we, wn)) + 180) % 360
+            wspd = sqrt(wn * wn + we * we)
+            
+            tas = mach2tas(new_mach, pos["alt"]*ft) 
+            
+            wca = asin((wspd / tas) * sin(radians(bearing - wdir)))
+
+            heading = (360 + bearing - degrees(wca)) % 360
+
+            gsn = tas * cos(radians(heading)) - wn
+            gse = tas * sin(radians(heading)) - we
+
+            gs = sqrt(gsn * gsn + gse * gse) # ground speed
+            
+            cost = (distance_to_goal/gs)
+            
+            if self.constraints["time"][1] is None:
+                
+                if cost >= self.constraints["time"][0] or mach >= aircraft(ac)['limits']['MMO'] or mach <= (aircraft(ac)['cruise']['mach']-0.05):
+                    return new_mach
+                if (cost <= self.constraints["time"][0]):
+                    new_mach -= 0.01
+
+            else :
+                if (cost >= self.constraints["time"][0] and cost <= self.constraints["time"][1]) or mach >= aircraft(ac)['limits']['MMO'] or mach <= (aircraft(ac)['cruise']['mach']-0.05):
+                    return new_mach
+                
+                if (cost <= self.constraints["time"][0]):
+                    new_mach -= 0.01
+                if (cost >= self.constraints["time"][1]):
+                    new_mach += 0.01
+                
+        return new_mach
 
 def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple], ac : str, constraints : dict, wind_interpolator : GenericWindInterpolator, mach : float) -> float:
     """
@@ -897,78 +978,6 @@ def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple
     
     return new_fuel
 
-def mach_optimisation(origin : Union[str, tuple], destination : Union[str, tuple], ac : str, constraints : dict, wind_interpolator : GenericWindInterpolator) -> float:
-    """
-    Function to optimise the fuel loaded in the plane, doing multiple fuel loops to approach an optimal
-
-    Args:
-        origin (Union[str, tuple]): 
-            ICAO code of the departure airport of th flight plan e.g LFPG for Paris-CDG, or a tuple (lat,lon)
-        
-        destination (Union[str, tuple]): 
-            ICAO code of the arrival airport of th flight plan e.g LFBO for Toulouse-Blagnac airport, or a tuple (lat,lon)
-        
-        ac (str): 
-            Aircarft type describe in openap datas (https://github.com/junzis/openap/tree/master/openap/data/aircraft)
-        
-        constraints (dict): 
-            Constraints that will be defined for the flight plan 
-        
-        wind_interpolator (GenericWindInterpolator): 
-            Define the wind interpolator to use wind informations for the flight plan
-            
-        fuel_loaded (float):
-            Fuel loaded in the plane for the flight 
-    Returns:
-        float: 
-            Return mach average speed to complete the flight in the good time window
-    """
-     
-    fuel_remaining = True
-    small_diff = False
-    step = 0
-    mach = aircraft(ac)['cruise']['mach']
-    new_fuel = constraints["fuel"]
-    domain_factory = lambda: FlightPlanningDomain(origin, 
-                                                destination, 
-                                                ac, 
-                                                constraints=constraints,
-                                                wind_interpolator=wind_interpolator, 
-                                                objective="time",
-                                                nb_forward_points=41,
-                                                nb_lateral_points=11,
-                                                fuel_loaded = new_fuel,
-                                                mach = mach
-                                                )
-    domain = domain_factory()
-    too_fast, too_slow = domain.simple_mach_loop(domain_factory)
-    step = 0
-    while ( (too_fast or too_slow) and mach <= aircraft(ac)['limits']['MMO'] and mach >= (aircraft(ac)['cruise']['mach']-0.05) or step > 10) :
-        step += 1
-        if too_fast :
-            mach -= 0.01
-        elif too_slow :
-            mach += 0.01
-            
-        domain_factory = lambda: FlightPlanningDomain(origin, 
-                                                destination, 
-                                                ac, 
-                                                constraints=constraints,
-                                                wind_interpolator=wind_interpolator, 
-                                                objective="time",
-                                                nb_forward_points=41,
-                                                nb_lateral_points=11,
-                                                fuel_loaded = constraints["fuel"],
-                                                mach = mach
-                                                )
-        domain = domain_factory()
-        
-        fuel_prec = constraints["fuel"]
-        too_fast, too_slow = domain.simple_mach_loop(domain_factory)
-        if not fuel_remaining :
-            constraints['fuel'] = aircraft(ac)['limits']['MFC']
-    
-    return mach
 
 
 if __name__ == "__main__":
@@ -1093,10 +1102,7 @@ if __name__ == "__main__":
     
     # Doing a speed loop if necessary
     
-    if constraints["time"] is not None :
-        mach = mach_optimisation(origin, destination, ac, constraints, wind_interpolator)
-    else :
-        mach = aircraft(ac)['cruise']['mach']   
+    mach = aircraft(ac)['cruise']['mach']   
     # Creating the domain 
     domain_factory = lambda: FlightPlanningDomain(origin, 
                                                   destination, 
