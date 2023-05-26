@@ -74,12 +74,7 @@ def plot_trajectory(
     latmin, latmax = min(lat1, lat2), max(lat1, lat2)
     lonmin, lonmax = min(lon1, lon2), max(lon1, lon2)
 
-    ax = plt.axes(
-        projection=ccrs.TransverseMercator(
-            central_longitude=(lonmax - lonmin) / 2,
-            central_latitude=(latmax - latmin) / 2,
-        )
-    )
+    ax = plt.axes(projection=ccrs.TransverseMercator())
 
     wind_sample = 30
 
@@ -111,13 +106,13 @@ def plot_trajectory(
 
     # great circle
     ax.scatter(lon1, lat1, c="darkgreen", transform=ccrs.Geodetic())
-    ax.scatter(lon2, lat2, c="tab:red", transform=ccrs.Geodetic())
+    ax.scatter(lon2, lat2, c="red", transform=ccrs.Geodetic())
 
     ax.plot(
         [lon1, lon2],
         [lat1, lat2],
         label="Great Circle",
-        color="tab:red",
+        color="red",
         ls="--",
         transform=ccrs.Geodetic(),
     )
@@ -126,7 +121,7 @@ def plot_trajectory(
     ax.plot(
         trajectory.lon,
         trajectory.lat,
-        color="tab:green",
+        color="green",
         transform=ccrs.Geodetic(),
         linewidth=2,
         marker=".",

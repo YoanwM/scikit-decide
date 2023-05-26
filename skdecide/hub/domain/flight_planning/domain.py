@@ -188,8 +188,12 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             self.mach = mach
         else :
             self.mach = self.ac['cruise']['mach']
+        
         # Initialisation of the objective, the constraints and the wind interpolator
-        self.objective = objective
+        if ["distance", "fuel", "lazy_fuel", "time", "lazy_time"].__contains__(objective):
+            self.objective = objective
+        else:
+            self.objective = None
         self.constraints = constraints
         self.wind_ds = None
         if wind_interpolator:
@@ -223,13 +227,13 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             constraints["fuel"] = 0.97* fuel_loaded
             
         if fuel_loop :
-            fuel_loaded = fuel_optimisation(origin, destination, ac, constraints, wind_interpolator,mach)
+            fuel_loaded = fuel_optimisation(origin, destination, ac, constraints, wind_interpolator,self.mach)
             # Adding fuel reserve (but we can't put more fuel than maxFuel)
-            fuel_loaded = min(1.1 * fuel_loaded, maxFuel)
+            fuel_loaded = min(1.1 * fuel_loaded, self.ac["limits"]['MFC'])
         elif fuel_loaded :
             constraints["fuel"] = 0.97* fuel_loaded # Update of the maximum fuel there is to be used
         else :
-            fuel_loaded = maxFuel
+            fuel_loaded = self.ac["limits"]['MFC']
         self.fuel_loaded = fuel_loaded    
         
         assert(fuel_loaded <= self.ac["limits"]['MFC']) # Ensure fuel loaded <= fuel capacity
@@ -242,7 +246,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                             "lat": self.lat1, # latitude of the origin of the flight plan
                             "lon": self.lon1, # longitude of the origin of the flight plan
                             "mass": self.ac["limits"]["MTOW"], # Initialisation of the mass of the aircraft, here with all fuel loaded we reached Maximum TakeOff Weight
-                            "mach": mach, # Initialisation of the speed of the aircraft, in mach
+                            "mach": self.mach, # Initialisation of the speed of the aircraft, in mach
                             "fuel": 0.0, # Fuel consummed initialisation 
                             "alt": self.alt1, # Altitude of the origin, in ft
                         }
@@ -259,7 +263,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                             "lat": self.lat1,
                             "lon": self.lon1,
                             "mass": self.ac["limits"]["MTOW"] - 0.8*(self.ac["limits"]["MFC"]-fuel_loaded), # Here we compute the weight difference between the fuel loaded and the fuel capacity
-                            "mach": mach,
+                            "mach": self.mach,
                             "fuel": 0.0,
                             "alt": self.alt1,
                         }
@@ -306,7 +310,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         to_lon = self.network[next_x][next_y][next_z].lon
         to_alt = self.network[next_x][next_y][next_z].height
         
-        self.mach = self.speed_management(trajectory.tail(1))
+        #self.mach = min(self.speed_management(trajectory.tail(1)), self.ac["limits"]["MMO"])
         trajectory = self.flying(
             trajectory.tail(1), (to_lat, to_lon, to_alt))
 
@@ -330,17 +334,18 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         assert memory != next_state, "Next state is the same as the current state" 
         # Have to change -> openAP top ?
         if self.objective == "distance":
-            cost = distance(
-                memory.trajectory.iloc[-1]["lat"],
-                memory.trajectory.iloc[-1]["lon"],
-                next_state.trajectory.iloc[-1]["lat"],
-                next_state.trajectory.iloc[-1]["lon"],
-            )
-        elif self.objective == "fuel":
+            cost = LatLon.distanceTo(LatLon(memory.trajectory.iloc[-1]["lat"],
+                                            memory.trajectory.iloc[-1]["lon"],
+                                            memory.trajectory.iloc[-1]["alt"]),
+                                     LatLon(next_state.trajectory.iloc[-1]["lat"],
+                                            next_state.trajectory.iloc[-1]["lon"],
+                                            next_state.trajectory.iloc[-1]["alt"]))
+        elif self.objective == "fuel" or self.objective == "lazy_fuel":
             cost = memory.trajectory.iloc[-1]["mass"]-next_state.trajectory.iloc[-1]["mass"]
-        elif self.objective == "time":
+        elif self.objective == "time" or self.objective == "lazy_time":
             cost = next_state.trajectory.iloc[-1]["ts"]-memory.trajectory.iloc[-1]["ts"] 
-        # return Value(cost=1)
+        else :
+            cost=0
         return Value(cost=cost)
 
     def _get_initial_state_(self) -> D.T_state:
@@ -437,7 +442,8 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         )
 
     def heuristic(self, s: D.T_state, objective : str = None) -> Value[D.T_value]:
-        """Heuristic to be used by search algorithms, depending on the objective and constraints. 
+        """
+        Heuristic to be used by search algorithms, depending on the objective and constraints. 
         """
         if objective is None :
             objective = self.objective
@@ -446,11 +452,12 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         
         # Compute distance in meters
         distance_to_goal = LatLon.distanceTo(LatLon(pos["lat"],pos["lon"],height=pos["alt"]), LatLon(self.lat2, self.lon2,height=self.alt2))
+        distance_to_start = LatLon.distanceTo(LatLon(pos["lat"],pos["lon"],height=pos["alt"]), LatLon(self.lat1, self.lon1,height=self.alt1))
         
         if objective == "distance" : 
             cost = distance_to_goal
 
-        if objective == "fuel" :
+        elif objective == "fuel" :
              
             we, wn = 0,0
             bearing = aero_bearing(pos["lat"], pos["lon"], self.lat2, self.lon2)
@@ -484,7 +491,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                                                                 tas * kts,
                                                                 pos["alt"] * ft)
                                                          
-        if objective == "time" :
+        elif objective == "time" :
             we, wn = 0,0
             bearing = aero_bearing(pos["lat"], pos["lon"], self.lat2, self.lon2)
             
@@ -515,6 +522,14 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             
             cost = (distance_to_goal/gs)
 
+        elif objective == "lazy_fuel" :
+            fuel_consummed = s.trajectory.iloc[0]["mass"] - pos["mass"]
+            cost = distance_to_goal * (fuel_consummed/distance_to_start)
+        
+        elif objective == "lazy_time" :
+            cost = distance_to_goal * ((pos["ts"]- s.trajectory.iloc[0]["ts"])/distance_to_start)
+        else : 
+            cost = 0
         return Value(cost=cost)
 
     def get_network(self, p0: LatLon, p1: LatLon, nb_forward_points: int, nb_lateral_points: int, 
@@ -757,22 +772,24 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
         terminal_state_constraints = self._get_terminal_state_time_fuel(observation)
         print(terminal_state_constraints)
         if is_goal_reached :
-            if self.constraints['time'] is not None :
-                if self.constraints['time'][1] >= terminal_state_constraints['time'] :
+            if self.constraints is not None :
+                if self.constraints['time'] is not None :
+                    if self.constraints['time'][1] >= terminal_state_constraints['time'] :
+                        if self.constraints['fuel'] >= terminal_state_constraints['fuel'] :
+                            print(f"Goal reached after {i_step} steps!")
+                        else : 
+                            print(f"Goal reached after {i_step} steps, but there is not enough fuel remaining!")
+                    else : 
+                        print(f"Goal reached after {i_step} steps, but not in the good timelapse!")
+                else :
                     if self.constraints['fuel'] >= terminal_state_constraints['fuel'] :
                         print(f"Goal reached after {i_step} steps!")
                     else : 
                         print(f"Goal reached after {i_step} steps, but there is not enough fuel remaining!")
-                else : 
-                    print(f"Goal reached after {i_step} steps, but not in the good timelapse!")
-            else :
-                if self.constraints['fuel'] >= terminal_state_constraints['fuel'] :
-                    print(f"Goal reached after {i_step} steps!")
-                else : 
-                    print(f"Goal reached after {i_step} steps, but there is not enough fuel remaining!")
         else:
             print(f"Goal not reached after {i_step} steps!")
-        solver._cleanup()       
+        solver._cleanup()      
+        return terminal_state_constraints 
     
     def flying(self, from_: pd.DataFrame, to_: Tuple[float, float, int]) -> pd.DataFrame:
         """Compute the trajectory of a flying object from a given point to a given point
@@ -808,7 +825,7 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
                 )
                 we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
 
-            wdir = (degrees(atan2(we, wn)) + 180) % 360
+            wdir = (degrees(atan2(we, wn)) - 180) % 360
             wspd = sqrt(wn * wn + we * we)
             
             tas = mach2tas(self.mach, alt*ft)  # 400
@@ -867,32 +884,34 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
     def speed_management(self, from_: pd.DataFrame) -> float :
         
         if self.constraints["time"] is None :
-            if self.objective == 'time':
+            if self.objective == 'time' or self.objective == 'lazy_time':
                 return self.ac['limits']['MMO'] # If there is no time constraint & the objective is "time", we use maximum speed
             else :
                 return self.ac['cruise']['mach'] # If the objecitve is not time, we use cruise speed
             
         pos = from_.to_dict("records")[0]
-        distance_to_goal = LatLon.distanceTo(LatLon(pos["lat"],pos["lon"],height=pos["alt"]), LatLon(self.lat2, self.lon2,height=self.alt2))
+        distance_to_goal = LatLon.distanceTo(LatLon(pos["lat"],pos["lon"],height=pos["alt"]), 
+                                             LatLon(self.lat2, self.lon2,height=self.alt2))
         new_mach = pos["mach"]
+        time = pos["ts"]
+        
+        we, wn= 0,0
+        bearing = aero_bearing(pos["lat"], pos["lon"], self.lat2, self.lon2)
+        
+        if self.wind_ds :
+            wind_ms = self.wind_ds.interpol_wind_classic(
+                lat=pos["lat"],
+                longi=pos["lon"],
+                alt=pos["alt"],
+                t=time
+            )
+            
+            we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
+
+        wdir = (degrees(atan2(we, wn)) + 180) % 360
+        wspd = sqrt(wn * wn + we * we)
         
         for i in range (10) :
-            we, wn= 0,0
-            bearing = aero_bearing(pos["lat"], pos["lon"], self.lat2, self.lon2)
-            
-            if self.wind_ds :
-                time = pos["ts"]
-                wind_ms = self.wind_ds.interpol_wind_classic(
-                    lat=pos["lat"],
-                    longi=pos["lon"],
-                    alt=pos["alt"],
-                    t=time
-                )
-                
-                we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
-
-            wdir = (degrees(atan2(we, wn)) + 180) % 360
-            wspd = sqrt(wn * wn + we * we)
             
             tas = mach2tas(new_mach, pos["alt"]*ft) 
             
@@ -903,19 +922,19 @@ class FlightPlanningDomain(DeterministicPlanningDomain, UnrestrictedActions, Ren
             gsn = tas * cos(radians(heading)) - wn
             gse = tas * sin(radians(heading)) - we
 
-            gs = sqrt(gsn * gsn + gse * gse) # ground speed
+            gs = sqrt(gsn * gsn + gse * gse)
             
-            cost = (distance_to_goal/gs)
+            cost = (distance_to_goal/gs)+time
             
             if self.constraints["time"][1] is None:
                 
-                if cost >= self.constraints["time"][0] or mach >= aircraft(ac)['limits']['MMO'] or mach <= (aircraft(ac)['cruise']['mach']-0.05):
+                if cost >= self.constraints["time"][0] or new_mach >= aircraft(ac)['limits']['MMO'] or new_mach <= (aircraft(ac)['cruise']['mach']-0.05):
                     return new_mach
                 if (cost <= self.constraints["time"][0]):
                     new_mach -= 0.01
 
             else :
-                if (cost >= self.constraints["time"][0] and cost <= self.constraints["time"][1]) or mach >= aircraft(ac)['limits']['MMO'] or mach <= (aircraft(ac)['cruise']['mach']-0.05):
+                if (cost >= self.constraints["time"][0] and cost <= self.constraints["time"][1]) or new_mach >= aircraft(ac)['limits']['MMO'] or new_mach <= (aircraft(ac)['cruise']['mach']-0.05):
                     return new_mach
                 
                 if (cost <= self.constraints["time"][0]):
@@ -962,10 +981,10 @@ def fuel_optimisation(origin : Union[str, tuple], destination : Union[str, tuple
                                                 ac, 
                                                 constraints=constraints,
                                                 wind_interpolator=wind_interpolator, 
-                                                objective="time",
+                                                objective="distance",
                                                 nb_forward_points=41,
                                                 nb_lateral_points=11,
-                                                nb_vertical_points=1,
+                                                nb_vertical_points=5,
                                                 fuel_loaded = new_fuel,
                                                 mach = mach
                                                 )
@@ -1046,7 +1065,7 @@ if __name__ == "__main__":
     if args.objective :
         objective = args.objective
     else : 
-        objective = "fuel"
+        objective = None
         
     if args.timeConstraintStart :
         if args.timeConstraintEnd :
