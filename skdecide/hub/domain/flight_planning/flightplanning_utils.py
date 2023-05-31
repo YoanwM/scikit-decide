@@ -3,22 +3,9 @@
 # LICENSE file in the root directory of this source tree.
 
 
-
-
+import time
 import warnings
 
-
-import glob
-import time
-from datetime import datetime, timedelta
-from math import asin, atan2, cos, degrees, radians, sin, sqrt
-from tempfile import NamedTemporaryFile
-from typing import Callable, Collection, Iterable, Tuple, Union
-from time import process_time
-import cdsapi
-import cfgrib
-import os,subprocess
-from matplotlib import cm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -26,15 +13,12 @@ import xarray as xr
 from cartopy import crs as ccrs
 from cartopy.feature import BORDERS, LAND, OCEAN
 from matplotlib.figure import Figure
-from openap import aero, nav
-from weather_interpolator.weather_tools import get_weather_noaa
+from openap import aero
 from pygeodesy.ellipsoidalVincenty import LatLon
-# from openap.extra.aero import ft, h_isa
-# from openap.top import wind
-from scipy.interpolate import RegularGridInterpolator
-from weather_interpolator.weather_tools.interpolator.GenericInterpolator import GenericWindInterpolator
 
 warnings.filterwarnings("ignore")
+
+
 class Timer(object):
     def __init__(self, name=None):
         self.name = name
@@ -49,6 +33,7 @@ class Timer(object):
             )
         print("Elapsed: %s" % (time.time() - self.tstart))
 
+
 def plot_trajectory(
     lat1, lon1, lat2, lon2, trajectory: pd.DataFrame, ds: xr.Dataset
 ) -> Figure:
@@ -61,13 +46,13 @@ def plot_trajectory(
     Returns:
         Figure: the figure
     """
- 
+
     fig = Figure(figsize=(600, 600))
     fig.canvas.header_visible = False
     fig.canvas.footer_visible = False
     fig.canvas.resizable = False
     fig.set_dpi(1)
-    
+
     # lon1, lat1 = trajectory.iloc[0]["lon"], trajectory.iloc[0]["lat"]
     # lon2, lat2 = trajectory.iloc[-1]["lon"], trajectory.iloc[-1]["lat"]
 
@@ -138,39 +123,64 @@ def plot_trajectory(
 
     return fig
 
-def plot_altitude(trajectory: pd.DataFrame) -> Figure :
+
+def plot_altitude(trajectory: pd.DataFrame) -> Figure:
     fig = plt.Figure()
     ax = plt.axes()
-    pos = [LatLon(trajectory.iloc[i]["lat"], 
-                   trajectory.iloc[i]["lon"],
-                   trajectory.iloc[i]["alt"]) for i in range (len(trajectory.alt))]
+    pos = [
+        LatLon(
+            trajectory.iloc[i]["lat"],
+            trajectory.iloc[i]["lon"],
+            trajectory.iloc[i]["alt"],
+        )
+        for i in range(len(trajectory.alt))
+    ]
     dist = [d.distanceTo(pos[0]) for d in pos]
-    ax.plot(dist,trajectory.alt)
-    #ax.plot(np.arange(len(trajectory.alt)),trajectory.alt)
+    ax.plot(dist, trajectory.alt)
+    # ax.plot(np.arange(len(trajectory.alt)),trajectory.alt)
     return fig
 
-def plot_network(domain, dir = None):
+
+def plot_network(domain, dir=None):
     network = domain.network
     origin_coord = domain.lat1, domain.lon1, domain.alt1
     target_coord = domain.lat2, domain.lon2, domain.alt2
-    fig, ax = plt.subplots(1, subplot_kw={"projection": ccrs.PlateCarree()}) 
-    ax.set_extent([min(origin_coord[1], target_coord[1]) - 4, max(origin_coord[1], target_coord[1])+4, 
-                min(origin_coord[0], target_coord[0]) - 2, max(origin_coord[0], target_coord[0]) + 2])
+    fig, ax = plt.subplots(1, subplot_kw={"projection": ccrs.PlateCarree()})
+    ax.set_extent(
+        [
+            min(origin_coord[1], target_coord[1]) - 4,
+            max(origin_coord[1], target_coord[1]) + 4,
+            min(origin_coord[0], target_coord[0]) - 2,
+            max(origin_coord[0], target_coord[0]) + 2,
+        ]
+    )
     ax.add_feature(OCEAN, facecolor="#d1e0e0", zorder=-1, lw=0)
     ax.add_feature(LAND, facecolor="#f5f5f5", lw=0)
     ax.add_feature(BORDERS, lw=0.5, color="gray")
     ax.gridlines(draw_labels=True, color="gray", alpha=0.5, ls="--")
     ax.coastlines(resolution="50m", lw=0.5, color="gray")
-    #ax.plot(longs, lats, marker="o", transform=ccrs.Geodetic())
-    ax.scatter([network[x][x1][x2].lon for x in range(len(network)) for x1 in range(len(network[x])) for x2 in range(len(network[x][x1]))], 
-               [network[x][x1][x2].lat for x in range(len(network)) for x1 in range(len(network[x])) for x2 in range(len(network[x][x1]))], 
-               transform=ccrs.Geodetic(), 
-               s=0.2)
-    
-    #ax.stock_img()
-    if dir :
+    # ax.plot(longs, lats, marker="o", transform=ccrs.Geodetic())
+    ax.scatter(
+        [
+            network[x][x1][x2].lon
+            for x in range(len(network))
+            for x1 in range(len(network[x]))
+            for x2 in range(len(network[x][x1]))
+        ],
+        [
+            network[x][x1][x2].lat
+            for x in range(len(network))
+            for x1 in range(len(network[x]))
+            for x2 in range(len(network[x][x1]))
+        ],
+        transform=ccrs.Geodetic(),
+        s=0.2,
+    )
+
+    # ax.stock_img()
+    if dir:
         fig.savefig(f"{dir}/network points.png")
-    else :
+    else:
         fig.savefig("network points.png")
 
 

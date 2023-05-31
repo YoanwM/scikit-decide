@@ -1,9 +1,10 @@
-import pygrib
-import os
-import numpy as np
-import sys
-import pytz
 import datetime
+import os
+import sys
+
+import numpy as np
+import pygrib
+import pytz
 
 
 def computeTimeStamps(dates, times, steps):
@@ -23,12 +24,16 @@ def computeTimeStamps(dates, times, steps):
     for date in dates:
         date_string = "{0:-08d}".format(date)
         for time in times:
-            hour = int(time/100)
-            date_object = datetime.datetime(year=int(date_string[0:4]),
-                                            month=int(date_string[4:6]),
-                                            day=int(date_string[6:8]),
-                                            hour=hour,
-                                            minute=0, second=0, tzinfo=pytz.utc)
+            hour = int(time / 100)
+            date_object = datetime.datetime(
+                year=int(date_string[0:4]),
+                month=int(date_string[4:6]),
+                day=int(date_string[6:8]),
+                hour=hour,
+                minute=0,
+                second=0,
+                tzinfo=pytz.utc,
+            )
             for step in steps:
                 forecast_datetime = date_object + datetime.timedelta(hours=int(step))
                 # forecast_datetime = forecast_datetime.replace(tzinfo=pytz.utc)
@@ -52,11 +57,15 @@ def computeTimeStamp(date, time, step):
     """
     date_string = "{0:-08d}".format(date)
     hour = int(time / 100)
-    date_object = datetime.datetime(year=int(date_string[0:4]),
-                                    month=int(date_string[4:6]),
-                                    day=int(date_string[6:8]),
-                                    hour=hour,
-                                    minute=0, second=0, tzinfo=pytz.utc)
+    date_object = datetime.datetime(
+        year=int(date_string[0:4]),
+        month=int(date_string[4:6]),
+        day=int(date_string[6:8]),
+        hour=hour,
+        minute=0,
+        second=0,
+        tzinfo=pytz.utc,
+    )
     forecast_datetime = date_object + datetime.timedelta(hours=int(step))
     # forecast_datetime.replace(tzinfo=pytz.utc)
     return datetime.datetime.timestamp(forecast_datetime)
@@ -74,9 +83,9 @@ def flip_matrix(matrix):
     for var in matrix:
         if matrix[var]["lats"][-1] < matrix[var]["lats"][0]:
             matrix[var]["lats"] = matrix[var]["lats"][::-1]
-            matrix[var]["values"] = np.flip(matrix[var]["values"], matrix[var]["values"].ndim-2)
-
-
+            matrix[var]["values"] = np.flip(
+                matrix[var]["values"], matrix[var]["values"].ndim - 2
+            )
 
 
 class GribPygribUniqueForecast(object):
@@ -86,9 +95,10 @@ class GribPygribUniqueForecast(object):
     convection. It is based on Pygrib library.
 
     """
-    def __init__(self, grib_path, grib_name,
-                 selected_forecast_dates=None,
-                 selected_levels=None):
+
+    def __init__(
+        self, grib_path, grib_name, selected_forecast_dates=None, selected_levels=None
+    ):
         """
         Initialization.
 
@@ -149,8 +159,11 @@ class GribPygribUniqueForecast(object):
         self.steps = list(steps)
         # check if grib has the content supported by GribPygrib object.
         if len(self.dates) > 1 or len(self.times) > 1:
-            sys.exit("Not supported by GribPygrib dates or times len is greater than 1. dates{0} times:{1}".format(
-                self.dates, self.times))
+            sys.exit(
+                "Not supported by GribPygrib dates or times len is greater than 1. dates{0} times:{1}".format(
+                    self.dates, self.times
+                )
+            )
         self.forecast_dates = sorted(list(forecast_dates))
         self.levels = sorted(list(levels))
         self.members = sorted(list(members))
@@ -193,38 +206,44 @@ class GribPygribUniqueForecast(object):
     def getParameterUniqueForecast(self, parameter, levels=None):
         gribs = self.gribs
         merged_matrix_dict = {parameter.upper(): {}}
-        merged_matrix_dict[parameter.upper()]['values'] = []
-        merged_matrix_dict[parameter.upper()]['longs'] = []
-        merged_matrix_dict[parameter.upper()]['lats'] = []
-        merged_matrix_dict[parameter.upper()]['times'] = []
+        merged_matrix_dict[parameter.upper()]["values"] = []
+        merged_matrix_dict[parameter.upper()]["longs"] = []
+        merged_matrix_dict[parameter.upper()]["lats"] = []
+        merged_matrix_dict[parameter.upper()]["times"] = []
         if levels is None:
             levels = self.selected_levels
         coordinates = [
-            ('t', self.selected_forecast_dates),
-            ('pl', levels),
-            ('lat', self.latitudes),
-            ('lon', self.longitudes),
+            ("t", self.selected_forecast_dates),
+            ("pl", levels),
+            ("lat", self.latitudes),
+            ("lon", self.longitudes),
         ]
         axis_sizes = [len(c_values) for (c_name, c_values) in coordinates]
         nan_array = np.empty(axis_sizes)
         nan_array.fill(np.NaN)
-        merged_matrix_dict[parameter.upper()]['values'] = nan_array
+        merged_matrix_dict[parameter.upper()]["values"] = nan_array
         gribs.rewind()
         for grib in gribs:
             ts = computeTimeStamp(grib.date, grib.dataTime, grib.stepRange)
-            if (grib.shortName == parameter) and (ts in self.selected_forecast_dates) and \
-                    (grib.level in levels):
+            if (
+                (grib.shortName == parameter)
+                and (ts in self.selected_forecast_dates)
+                and (grib.level in levels)
+            ):
                 index_time = self.selected_forecast_dates.index(ts)
                 if levels is None:
                     index_level = 0
                 else:
                     index_level = levels.index(grib.level)
-                merged_matrix_dict[parameter.upper()]['values'][index_time, index_level, :, :] = \
-                    np.array(grib.values)
-        merged_matrix_dict[parameter.upper()]['times'] = np.array(self.selected_forecast_dates)
-        merged_matrix_dict[parameter.upper()]['levels'] = np.array(levels)
-        merged_matrix_dict[parameter.upper()]['longs'] = np.array(self.longitudes)
-        merged_matrix_dict[parameter.upper()]['lats'] = np.array(self.latitudes)
+                merged_matrix_dict[parameter.upper()]["values"][
+                    index_time, index_level, :, :
+                ] = np.array(grib.values)
+        merged_matrix_dict[parameter.upper()]["times"] = np.array(
+            self.selected_forecast_dates
+        )
+        merged_matrix_dict[parameter.upper()]["levels"] = np.array(levels)
+        merged_matrix_dict[parameter.upper()]["longs"] = np.array(self.longitudes)
+        merged_matrix_dict[parameter.upper()]["lats"] = np.array(self.latitudes)
         return merged_matrix_dict
 
     # parameters needed in convection
@@ -237,7 +256,7 @@ class GribPygribUniqueForecast(object):
         :return: Dictionary with the array containing parameter 'totalx'.
         :rtype: dict
         """
-        return self.getParameters(['totalx'])
+        return self.getParameters(["totalx"])
 
     def getCPs(self):
         """
@@ -247,7 +266,7 @@ class GribPygribUniqueForecast(object):
         :return: Dictionary with the array containing parameter 'cp'.
         :rtype: dict
         """
-        return self.getParameters(['cp'])
+        return self.getParameters(["cp"])
 
     # parameters needed in icing
     # ==========================
@@ -259,7 +278,7 @@ class GribPygribUniqueForecast(object):
         :return: Dictionary with the array containing parameter 't'.
         :rtype: dict
         """
-        return self.getParameters(['t'], self.levels)
+        return self.getParameters(["t"], self.levels)
 
     def getRelativeHumidity(self):
         """
@@ -269,7 +288,7 @@ class GribPygribUniqueForecast(object):
         :return: Dictionary with the array containing parameter 'r'.
         :rtype: dict
         """
-        return self.getParameters(['r'], self.levels)
+        return self.getParameters(["r"], self.levels)
 
     def getOmega(self):
         """
@@ -279,7 +298,7 @@ class GribPygribUniqueForecast(object):
         :return: Dictionary with the array containing parameter 'w'.
         :rtype: dict
         """
-        return self.getParameters(['w'], self.levels)
+        return self.getParameters(["w"], self.levels)
 
     # parameters needed in wind_uncertainty
     # =====================================
@@ -291,7 +310,7 @@ class GribPygribUniqueForecast(object):
         :return: Dictionary with the array containing parameter 'u'.
         :rtype: dict
         """
-        return self.getParameters(['u'], self.levels)
+        return self.getParameters(["u"], self.levels)
 
     def getVs(self):
         """
@@ -301,64 +320,74 @@ class GribPygribUniqueForecast(object):
         :return: Dictionary with the array containing parameter 'v'.
         :rtype: dict
         """
-        return self.getParameters(['v'], self.levels)
+        return self.getParameters(["v"], self.levels)
 
     # Generic function to collect parameter values
     # ============================================
     def getParameter(self, parameter, level=None):
         gribs = self.gribs
         merged_matrix_dict = {parameter.upper(): {}}
-        merged_matrix_dict[parameter.upper()]['values'] = []
-        merged_matrix_dict[parameter.upper()]['longs'] = []
-        merged_matrix_dict[parameter.upper()]['lats'] = []
-        merged_matrix_dict[parameter.upper()]['times'] = []
+        merged_matrix_dict[parameter.upper()]["values"] = []
+        merged_matrix_dict[parameter.upper()]["longs"] = []
+        merged_matrix_dict[parameter.upper()]["lats"] = []
+        merged_matrix_dict[parameter.upper()]["times"] = []
 
         if level is None:
             coordinates = [
-                ('t', self.selected_forecast_dates),
-                ('pl', [-9999]),
-                ('ens_n', self.members),
-                ('lat', self.latitudes),
-                ('lon', self.longitudes),
+                ("t", self.selected_forecast_dates),
+                ("pl", [-9999]),
+                ("ens_n", self.members),
+                ("lat", self.latitudes),
+                ("lon", self.longitudes),
             ]
             axis_sizes = [len(c_values) for (c_name, c_values) in coordinates]
             nan_array = np.empty(axis_sizes)
             nan_array.fill(np.NaN)
-            merged_matrix_dict[parameter.upper()]['values'] = nan_array
+            merged_matrix_dict[parameter.upper()]["values"] = nan_array
             gribs.rewind()
             for grib in gribs:
                 ts = computeTimeStamp(grib.date, grib.dataTime, grib.stepRange)
-                if (grib.shortName == parameter) and (ts in self.selected_forecast_dates):
+                if (grib.shortName == parameter) and (
+                    ts in self.selected_forecast_dates
+                ):
                     index_time = self.selected_forecast_dates.index(ts)
                     index_level = 0
                     index_members = self.members.index(grib.perturbationNumber - 1)
-                    merged_matrix_dict[parameter.upper()]['values'][index_time, index_level, index_members, :, :] = \
-                        np.array(grib.values)
+                    merged_matrix_dict[parameter.upper()]["values"][
+                        index_time, index_level, index_members, :, :
+                    ] = np.array(grib.values)
         else:
             coordinates = [
-                ('t', self.selected_forecast_dates),
-                ('pl', self.selected_levels),
-                ('ens_n', self.members),
-                ('lat', self.latitudes),
-                ('lon', self.longitudes),
+                ("t", self.selected_forecast_dates),
+                ("pl", self.selected_levels),
+                ("ens_n", self.members),
+                ("lat", self.latitudes),
+                ("lon", self.longitudes),
             ]
             axis_sizes = [len(c_values) for (c_name, c_values) in coordinates]
             nan_array = np.empty(axis_sizes)
             nan_array.fill(np.NaN)
-            merged_matrix_dict[parameter.upper()]['values'] = nan_array
+            merged_matrix_dict[parameter.upper()]["values"] = nan_array
             gribs.rewind()
             for grib in gribs:
                 ts = computeTimeStamp(grib.date, grib.dataTime, grib.stepRange)
-                if (grib.shortName == parameter) and (ts in self.selected_forecast_dates) and (grib.level in self.selected_levels):
+                if (
+                    (grib.shortName == parameter)
+                    and (ts in self.selected_forecast_dates)
+                    and (grib.level in self.selected_levels)
+                ):
                     index_time = self.selected_forecast_dates.index(ts)
                     index_level = self.selected_levels.index(grib.level)
                     index_members = self.members.index(grib.perturbationNumber - 1)
-                    merged_matrix_dict[parameter.upper()]['values'][index_time, index_level, index_members, :, :] = \
-                        np.array(grib.values)
-        merged_matrix_dict[parameter.upper()]['times'] = np.array(self.selected_forecast_dates)
-        merged_matrix_dict[parameter.upper()]['levels'] = np.array(self.selected_levels)
-        merged_matrix_dict[parameter.upper()]['longs'] = np.array(self.longitudes)
-        merged_matrix_dict[parameter.upper()]['lats'] = np.array(self.latitudes)
+                    merged_matrix_dict[parameter.upper()]["values"][
+                        index_time, index_level, index_members, :, :
+                    ] = np.array(grib.values)
+        merged_matrix_dict[parameter.upper()]["times"] = np.array(
+            self.selected_forecast_dates
+        )
+        merged_matrix_dict[parameter.upper()]["levels"] = np.array(self.selected_levels)
+        merged_matrix_dict[parameter.upper()]["longs"] = np.array(self.longitudes)
+        merged_matrix_dict[parameter.upper()]["lats"] = np.array(self.latitudes)
 
         return merged_matrix_dict
 
@@ -379,62 +408,71 @@ class GribPygribUniqueForecast(object):
         gribs = self.gribs
         for var in parameters:
             merged_matrix_dict = {var.upper(): {}}
-            merged_matrix_dict[var.upper()]['values'] = []
-            merged_matrix_dict[var.upper()]['longs'] = []
-            merged_matrix_dict[var.upper()]['lats'] = []
-            merged_matrix_dict[var.upper()]['times'] = []
+            merged_matrix_dict[var.upper()]["values"] = []
+            merged_matrix_dict[var.upper()]["longs"] = []
+            merged_matrix_dict[var.upper()]["lats"] = []
+            merged_matrix_dict[var.upper()]["times"] = []
 
         if level is None:
             coordinates = [
-                ('t', self.selected_forecast_dates),
-                ('pl', [-9999]),
-                ('ens_n', self.members),
-                ('lat', self.latitudes),
-                ('lon', self.longitudes),
+                ("t", self.selected_forecast_dates),
+                ("pl", [-9999]),
+                ("ens_n", self.members),
+                ("lat", self.latitudes),
+                ("lon", self.longitudes),
             ]
             axis_sizes = [len(c_values) for (c_name, c_values) in coordinates]
             nan_array = np.empty(axis_sizes)
             nan_array.fill(np.NaN)
             for var in parameters:
-                merged_matrix_dict[var.upper()]['values'] = nan_array
+                merged_matrix_dict[var.upper()]["values"] = nan_array
             gribs.rewind()
             for grib in gribs:
                 ts = computeTimeStamp(grib.date, grib.dataTime, grib.stepRange)
-                if (grib.shortName in parameters) and (ts in self.selected_forecast_dates):
+                if (grib.shortName in parameters) and (
+                    ts in self.selected_forecast_dates
+                ):
                     index_time = self.selected_forecast_dates.index(ts)
                     index_level = 0
                     index_members = self.members.index(grib.perturbationNumber - 1)
-                    merged_matrix_dict[grib.shortName.upper()]['values'][index_time, index_level, index_members, :, :] \
-                        = np.array(grib.values)
+                    merged_matrix_dict[grib.shortName.upper()]["values"][
+                        index_time, index_level, index_members, :, :
+                    ] = np.array(grib.values)
         else:
             coordinates = [
-                ('t', self.selected_timestamps),
-                ('pl', self.selected_levels),
-                ('ens_n', self.members),
-                ('lat', self.latitudes),
-                ('lon', self.longitudes),
+                ("t", self.selected_timestamps),
+                ("pl", self.selected_levels),
+                ("ens_n", self.members),
+                ("lat", self.latitudes),
+                ("lon", self.longitudes),
             ]
             axis_sizes = [len(c_values) for (c_name, c_values) in coordinates]
             nan_array = np.empty(axis_sizes)
             nan_array.fill(np.NaN)
             for var in parameters:
-                merged_matrix_dict[var.upper()]['values'] = nan_array
+                merged_matrix_dict[var.upper()]["values"] = nan_array
             gribs.rewind()
             for grib in gribs:
                 ts = computeTimeStamp(grib.date, grib.dataTime, grib.stepRange)
-                if (grib.shortName in parameters) and (ts in self.selected_forecast_dates) and \
-                        (grib.level in self.selected_levels):
+                if (
+                    (grib.shortName in parameters)
+                    and (ts in self.selected_forecast_dates)
+                    and (grib.level in self.selected_levels)
+                ):
                     index_time = self.selected_forecast_dates.index(ts)
                     index_level = self.selected_levels.index(grib.level)
                     index_members = self.members.index(grib.perturbationNumber - 1)
-                    merged_matrix_dict[grib.shortName.upper()]['values'][index_time, index_level, index_members, :, :] \
-                        = np.array(grib.values)
+                    merged_matrix_dict[grib.shortName.upper()]["values"][
+                        index_time, index_level, index_members, :, :
+                    ] = np.array(grib.values)
 
         for var in parameters:
-            merged_matrix_dict[var.upper()]['times'] = np.array(self.selected_forecast_dates)
-            merged_matrix_dict[var.upper()]['levels'] = np.array(self.levels)
-            merged_matrix_dict[var.upper()]['longs'] = np.array(self.longitudes)
-            merged_matrix_dict[var.upper()]['lats'] = np.array(self.latitudes)
+            merged_matrix_dict[var.upper()]["times"] = np.array(
+                self.selected_forecast_dates
+            )
+            merged_matrix_dict[var.upper()]["levels"] = np.array(self.levels)
+            merged_matrix_dict[var.upper()]["longs"] = np.array(self.longitudes)
+            merged_matrix_dict[var.upper()]["lats"] = np.array(self.latitudes)
 
         return merged_matrix_dict
 

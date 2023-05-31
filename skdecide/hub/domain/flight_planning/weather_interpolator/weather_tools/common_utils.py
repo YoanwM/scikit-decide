@@ -4,11 +4,12 @@ Created on Tue May  3 12:09:06 2016 !!!
 Useful custom functions callable by many part of the projects
 @author: popo
 """
-import os
-import numpy as np
 import collections
-import matplotlib.pyplot as plt
 import math
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
 import weather_interpolator.weather_tools.std_atm as std_atm
 
 
@@ -36,25 +37,25 @@ def is_iterable(element):
     return isinstance(element, collections.Iterable)
 
 
-def convert(val, init='kg/min', target='lb/h'):
+def convert(val, init="kg/min", target="lb/h"):
     if init == target:
         return val
-    if init == 'kg/min' and target == 'lb/h':
+    if init == "kg/min" and target == "lb/h":
         lb = 2.20462
         return val * lb * 60
-    if init == 'lb' and target == 'kg':
-        lbtokg = 1. / 2.20462
+    if init == "lb" and target == "kg":
+        lbtokg = 1.0 / 2.20462
         return lbtokg * val
-    if init == 'kg' and target == 'lb':
+    if init == "kg" and target == "lb":
         kgtolb = 2.20462
         return kgtolb * val
-    if init == 'ft' and target == 'm':
+    if init == "ft" and target == "m":
         fttom = 0.3048
         return val * fttom
-    if init == 'm' and target == 'ft':
-        mtoft = 1. / 0.3048
+    if init == "m" and target == "ft":
+        mtoft = 1.0 / 0.3048
         return val * mtoft
-    if init == 'ft' and target == 'hPa':
+    if init == "ft" and target == "hPa":
         p0 = 1013.25
         t0 = 288.15
         alpha = 0.0065
@@ -62,29 +63,32 @@ def convert(val, init='kg/min', target='lb/h'):
         r = 287.853
         p1 = 226.32
         t1 = 216.65
-        return np.where(val > 36089, p1 * np.exp(-g0 * (convert(val, 'ft', 'm') - 11000.) / (r * t1)),
-                        p0 * (1 - alpha / t0 * convert(val, 'ft', 'm')) ** (g0 / (alpha * r)))
-    if (init == 'pa' or init == 'Pa') and target == 'ft':
+        return np.where(
+            val > 36089,
+            p1 * np.exp(-g0 * (convert(val, "ft", "m") - 11000.0) / (r * t1)),
+            p0 * (1 - alpha / t0 * convert(val, "ft", "m")) ** (g0 / (alpha * r)),
+        )
+    if (init == "pa" or init == "Pa") and target == "ft":
         return std_atm.press2alt(val, press_units=init.lower(), alt_units=target)
-    if init == 'ft' and target == 'Pa':
-        return 10. ** 2 * convert(val, init='ft', target='hPa')
-    if init == 'psia' and target == 'Pa':
+    if init == "ft" and target == "Pa":
+        return 10.0**2 * convert(val, init="ft", target="hPa")
+    if init == "psia" and target == "Pa":
         return val * 6894.75728
-    if init == 'celsius' and target == 'K':
+    if init == "celsius" and target == "K":
         return val + 273.15
-    if init == 'K' and target == 'celsius':
+    if init == "K" and target == "celsius":
         return val - 273.15
-    if init == 'nm' and target == 'km':
+    if init == "nm" and target == "km":
         return 1.852 * val
-    if init == 'km' and target == 'nm':
+    if init == "km" and target == "nm":
         return val / 1.852
-    if init == 'm/s' and target == 'kts':
+    if init == "m/s" and target == "kts":
         return 1.94384 * val
-    if init == 'kts' and target == 'm/s':
+    if init == "kts" and target == "m/s":
         return val / 1.94384
-    if init == 'kl' and target == 'kg':  # kl: kerosene liter
+    if init == "kl" and target == "kg":  # kl: kerosene liter
         return val * 0.8201
-    if init == 'kg' and target == 'kl':
+    if init == "kg" and target == "kl":
         return val / 0.8201
 
 
@@ -109,7 +113,7 @@ def intersect_interval(x, y):
 
 
 def convert_str_tuple_to_tuple(str_tuple, conv=int):
-    a = str_tuple.split(',')
+    a = str_tuple.split(",")
     a[0] = conv(a[0][1:])
     a[1] = conv(a[1][1:-1])
     return a[0], a[1]
@@ -136,7 +140,7 @@ def monotonically_increasing(l):
 
 def return_twin_axes(color_list=None, figsize=(10, 10)):
     if color_list is None:
-        color_list = ['g', 'r']
+        color_list = ["g", "r"]
     f, ax1 = plt.subplots(1, figsize=figsize)
     for tl in ax1.get_yticklabels():
         tl.set_color(color_list[0])
@@ -146,5 +150,10 @@ def return_twin_axes(color_list=None, figsize=(10, 10)):
     return f, ax1, ax2
 
 
-if __name__ == '__main__':
-    print([(val, convert(val * 100, init='Pa', target='ft')) for val in [1000, 500, 300, 250, 200, 100, 50]])
+if __name__ == "__main__":
+    print(
+        [
+            (val, convert(val * 100, init="Pa", target="ft"))
+            for val in [1000, 500, 300, 250, 200, 100, 50]
+        ]
+    )
