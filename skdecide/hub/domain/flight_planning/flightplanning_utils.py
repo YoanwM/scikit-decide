@@ -149,7 +149,7 @@ def plot_altitude(trajectory: pd.DataFrame) -> Figure :
     #ax.plot(np.arange(len(trajectory.alt)),trajectory.alt)
     return fig
 
-def plot_network(domain):
+def plot_network(domain, dir = None):
     network = domain.network
     origin_coord = domain.lat1, domain.lon1, domain.alt1
     target_coord = domain.lat2, domain.lon2, domain.alt2
@@ -168,7 +168,10 @@ def plot_network(domain):
                s=0.2)
     
     #ax.stock_img()
-    fig.savefig("network points.png")
+    if dir :
+        fig.savefig(f"{dir}/network points.png")
+    else :
+        fig.savefig("network points.png")
 
 
 def trajectory_on_map(df, windfield=None, ax=None, wind_sample=4):
