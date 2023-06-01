@@ -1,4 +1,5 @@
 import argparse
+import math
 from argparse import Action
 from enum import Enum
 from math import asin, atan2, cos, degrees, radians, sin, sqrt
@@ -7,7 +8,12 @@ from typing import Any, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import pandas as pd
-from flightplanning_utils import plot_altitude, plot_network, plot_trajectory
+from flightplanning_utils import (
+    plot_altitude,
+    plot_network,
+    plot_trajectory,
+    plot_trajectory_no_map,
+)
 from IPython.display import clear_output
 from openap.extra.aero import atmos
 from openap.extra.aero import bearing as aero_bearing
@@ -475,9 +481,13 @@ class FlightPlanningDomain(
         Returns:
             matplotlib figure
         """
-
         return plot_trajectory(
-            self.lat1, self.lon1, self.lat2, self.lon2, memory.trajectory, self.wind_ds
+            self.lat1,
+            self.lon1,
+            self.lat2,
+            self.lon2,
+            memory.trajectory,
+            self.wind_ds,
         )
 
     def heuristic(self, s: D.T_state, objective: str = None) -> Value[D.T_value]:
@@ -521,9 +531,7 @@ class FlightPlanningDomain(
                 )
 
                 we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
-
             wdir = (degrees(atan2(we, wn)) + 180) % 360
-            print(wdir)
             wspd = sqrt(wn * wn + we * we)
 
             tas = mach2tas(pos["mach"], pos["alt"] * ft)
@@ -1075,27 +1083,20 @@ class FlightPlanningDomain(
                 )
                 we, wn = wind_ms[2][0], wind_ms[2][1]  # 0, 300
 
-            wdir = (degrees(atan2(we, wn)) + 180) % 360
             wspd = sqrt(wn * wn + we * we)
-
             tas = mach2tas(self.mach, alt * ft)  # 400
-
-            wca = asin((wspd / tas) * sin(radians(bearing - wdir)))
-
-            heading = (360 + bearing - degrees(wca)) % 360
-
-            gsn = tas * cos(radians(heading)) - wn
-            gse = tas * sin(radians(heading)) - we
-
-            gs = sqrt(gsn * gsn + gse * gse)  # ground speed
-
+            gs = compute_gspeed(
+                tas=tas,
+                true_course=bearing,
+                wind_speed=wspd,
+                wind_direction=3 * math.pi / 2 - atan2(wn, we),
+            )
             if gs * dt > dist:
                 # Last step. make sure we go to destination.
                 dt = dist / gs
                 ll = to_[0], to_[1]
             else:
-                brg = degrees(atan2(gse, gsn)) % 360.0
-                ll = latlon(pos["lat"], pos["lon"], gs * dt, brg, alt * ft)
+                ll = latlon(pos["lat"], pos["lon"], gs * dt, bearing, alt * ft)
 
             pos["fuel"] = dt * self.fuel_flow(
                 pos["mass"],
@@ -1211,6 +1212,37 @@ class FlightPlanningDomain(
                     new_mach += 0.01
 
         return new_mach
+
+
+def compute_gspeed(
+    tas: float, true_course: float, wind_speed: float, wind_direction: float
+):
+    # Tas : speed in m/s
+    # course : current bearing
+    # wind speed, wind norm in m/s
+    # wind_direction : (3pi/2-arctan(north_component/east_component)) in radian
+    ws = wind_speed
+    wd = wind_direction
+    tc = true_course
+
+    # calculate wind correction angle wca and ground speed gs
+    swc = ws / tas * sin(wd - tc)
+    if abs(swc) >= 1.0:
+        # Wind is to strong
+        gs = tas
+        error = "Wind is too strong"
+    else:
+        wca = asin(swc)  # * 180.0 / pi)
+        gs = tas * sqrt(1 - swc * swc) - ws * cos(wd - tc)
+
+    if gs < 0:
+        # Wind is to strong
+        gs = tas
+        error = "Wind is too strong"
+    else:
+        # Reset possible status message
+        error = ""
+    return gs
 
 
 def fuel_optimisation(
@@ -1465,7 +1497,7 @@ if __name__ == "__main__":
         graph_width=graphWidth,
     )
     domain = domain_factory()
-    plot_network(domain)
+    # plot_network(domain)
     solvers = match_solvers(domain=domain)
-
+    print(solvers)
     domain.solve(domain_factory, make_img=make_img, debug=debug)

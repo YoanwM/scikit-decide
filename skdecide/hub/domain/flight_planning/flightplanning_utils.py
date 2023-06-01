@@ -124,6 +124,69 @@ def plot_trajectory(
     return fig
 
 
+def plot_trajectory_no_map(
+    lat1, lon1, lat2, lon2, trajectory: pd.DataFrame, ds: xr.Dataset
+) -> Figure:
+    """Plot the trajectory of an object
+
+    Args:
+        trajectory (pd.DataFrame): the trajectory of the object
+        ds (xr.Dataset): the dataset containing the wind field
+
+    Returns:
+        Figure: the figure
+    """
+
+    fig = Figure(figsize=(600, 600))
+    fig.canvas.header_visible = False
+    fig.canvas.footer_visible = False
+    fig.canvas.resizable = False
+    fig.set_dpi(1)
+
+    # lon1, lat1 = trajectory.iloc[0]["lon"], trajectory.iloc[0]["lat"]
+    # lon2, lat2 = trajectory.iloc[-1]["lon"], trajectory.iloc[-1]["lat"]
+
+    latmin, latmax = min(lat1, lat2), max(lat1, lat2)
+    lonmin, lonmax = min(lon1, lon2), max(lon1, lon2)
+
+    fig, ax = plt.subplots(1)
+
+    wind_sample = 30
+    ax.set_xlim([lonmin, lonmax])
+    ax.set_ylim([latmin, latmax])
+    # great circle
+    ax.scatter(lon1, lat1, c="darkgreen")
+    ax.scatter(lon2, lat2, c="red")
+
+    ax.plot(
+        [lon1, lon2],
+        [lat1, lat2],
+        label="Great Circle",
+        color="red",
+        ls="--",
+    )
+
+    # trajectory
+    ax.plot(
+        trajectory.lon,
+        trajectory.lat,
+        color="green",
+        linewidth=2,
+        marker=".",
+        label="Optimal",
+    )
+
+    ax.legend()
+
+    # Save it to a temporary buffer.
+    # buf = BytesIO()
+    # fig.savefig(buf, format="png")
+    # Embed the result in the html output.
+    # data = base64.b64encode(buf.getbuffer()).decode("ascii")
+
+    return fig
+
+
 def plot_altitude(trajectory: pd.DataFrame) -> Figure:
     fig = plt.Figure()
     ax = plt.axes()
