@@ -141,6 +141,7 @@ def perf_model(
 
         wdir = (degrees(atan2(we, wn)) + 180) % 360
         wspd = sqrt(wn * wn + we * we)
+        wspd = sqrt(wn * wn + we * we)
 
         tas = mach2tas(mach, alt * ft)  # 400
 

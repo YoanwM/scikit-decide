@@ -7,6 +7,7 @@ from time import sleep
 from typing import Any, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from flightplanning_utils import (
     plot_altitude,
@@ -590,7 +591,7 @@ class FlightPlanningDomain(
             )
         else:
             cost = 0
-        return Value(cost=cost)
+        return Value(cost=0)  # cost)
 
     def get_network(
         self,
@@ -924,8 +925,7 @@ class FlightPlanningDomain(
         self.solve_with(solver, domain_factory)
         pause_between_steps = None
         max_steps = 100
-        observation = self.reset()
-
+        observation: State = self.reset()
         solver.reset()
         clear_output(wait=True)
 
@@ -966,6 +966,9 @@ class FlightPlanningDomain(
         pause_between_steps = None
         max_steps = 100
         observation = self.reset()
+
+        initial_mass = observation.mass
+        initial_time = observation.time
 
         solver.reset()
         clear_output(wait=True)
@@ -1016,6 +1019,11 @@ class FlightPlanningDomain(
                 plot_network(self)
         # goal reached?
         is_goal_reached = self.is_goal(observation)
+
+        final_mass = observation.mass
+        final_time = observation.time
+        print("Fuel burnt : ", initial_mass - final_mass)
+        print("Flight time ", final_time - initial_time)
         terminal_state_constraints = self._get_terminal_state_time_fuel(observation)
         print(terminal_state_constraints)
         if is_goal_reached:
@@ -1072,7 +1080,20 @@ class FlightPlanningDomain(
         dist = dist_
         loop = 0
         while dist > epsilon:
-            bearing = aero_bearing(pos["lat"], pos["lon"], to_[0], to_[1])
+            bearing_degrees = aero_bearing(pos["lat"], pos["lon"], to_[0], to_[1])
+
+            def heading(position, destination):
+                theta = np.arctan2(
+                    np.sin(np.pi / 180.0 * (destination[1] - position[1]))
+                    * np.cos(np.pi / 180.0 * destination[0]),
+                    np.cos(np.pi / 180.0 * position[0])
+                    * np.sin(np.pi / 180.0 * destination[0])
+                    - np.sin(np.pi / 180.0 * position[0])
+                    * np.cos(np.pi / 180.0 * destination[0])
+                    * np.cos(np.pi / 180.0 * (destination[1] - position[1])),
+                )
+                return theta
+
             p, _, _ = atmos(alt * ft)
             isobaric = p / 100
             we, wn = 0, 0
@@ -1087,16 +1108,19 @@ class FlightPlanningDomain(
             tas = mach2tas(self.mach, alt * ft)  # 400
             gs = compute_gspeed(
                 tas=tas,
-                true_course=bearing,
+                true_course=radians(bearing_degrees),
                 wind_speed=wspd,
                 wind_direction=3 * math.pi / 2 - atan2(wn, we),
             )
+            # print("gspeed", gs, "tas ", tas, "bearing ", bearing_degrees)
             if gs * dt > dist:
                 # Last step. make sure we go to destination.
                 dt = dist / gs
                 ll = to_[0], to_[1]
             else:
-                ll = latlon(pos["lat"], pos["lon"], gs * dt, bearing, alt * ft)
+                ll = latlon(
+                    pos["lat"], pos["lon"], d=gs * dt, brg=bearing_degrees, h=alt * ft
+                )
 
             pos["fuel"] = dt * self.fuel_flow(
                 pos["mass"],
@@ -1489,7 +1513,7 @@ if __name__ == "__main__":
         constraints=constraints,
         wind_interpolator=wind_interpolator,
         objective=objective,
-        nb_forward_points=41,
+        nb_forward_points=8,
         nb_lateral_points=11,
         fuel_loop=fuel_loop,
         descending_slope=descent_slope,
@@ -1500,4 +1524,16 @@ if __name__ == "__main__":
     # plot_network(domain)
     solvers = match_solvers(domain=domain)
     print(solvers)
-    domain.solve(domain_factory, make_img=make_img, debug=debug)
+    domain.solve(domain_factory, make_img=True, debug=False)
+
+    # athenes paris
+    # Fuel burnt :  5374.819150982934
+    # Flight time  8397.686199301223
+    # {'time': 8397.686199301223, 'fuel': 5374.8191509829085}
+
+    # Fuel
+    # burnt: 5715.311946230635
+    # Flight
+    # time
+    # 8940.528209196937
+    # {'time': 8940.528209196937, 'fuel': 5715.311946230631}
